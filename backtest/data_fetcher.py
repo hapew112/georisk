@@ -16,9 +16,9 @@ CACHE_DIR = Path(__file__).parent.parent / "data" / "cache"
 CACHE_TTL = 86400  # 1일 (초)
 
 
-def _cache_path(symbol: str) -> Path:
+def _cache_path(symbol: str, period: str = "2y") -> Path:
     safe = symbol.replace("^", "").replace("=", "").replace("-", "_")
-    return CACHE_DIR / f"{safe}_2y.parquet"
+    return CACHE_DIR / f"{safe}_{period}.parquet"
 
 
 def _is_stale(path: Path) -> bool:
@@ -34,7 +34,7 @@ def fetch_symbol(symbol: str, period: str = "2y") -> pd.DataFrame:
     캐시가 있고 1일 이내이면 캐시에서 로드, 아니면 yfinance에서 다운로드.
     """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = _cache_path(symbol)
+    path = _cache_path(symbol, period)
 
     if not _is_stale(path):
         df = pd.read_parquet(path)
@@ -60,6 +60,7 @@ def fetch_symbol(symbol: str, period: str = "2y") -> pd.DataFrame:
     df = df[cols].copy()
 
     df.to_parquet(path)
+    print(f"  Cached: {path.name} ({len(df)} rows)")
     return df
 
 

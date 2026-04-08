@@ -6,6 +6,8 @@ GeoRisk Stress Backtest Engine — CLI 진입점.
     python backtest.py
     python backtest.py --threshold 2 3
     python backtest.py --threshold 3 --period 1y
+    python backtest.py --mode bearish --threshold 1 2
+    python backtest.py --mode bearish --period 5y --threshold 1 2
 """
 
 import argparse
@@ -36,13 +38,16 @@ def _json_safe(obj):
     return obj
 
 
-def run_backtest(threshold: int, data: dict, signals_df, period: str) -> dict:
+def run_backtest(threshold: int, data: dict, signals_df, period: str, mode: str = "stress") -> dict:
     spy = data["SPY"]["Close"]
 
+    # mode에 따라 사용할 score 컬럼 선택
+    score_col = "bearish_score" if mode == "bearish" else "stress_score"
+
     # signal 발동일 추출
-    fired = signals_df[signals_df["stress_score"] >= threshold]
+    fired = signals_df[signals_df[score_col] >= threshold]
     signal_dates = [
-        {"date": d, "score": int(row["stress_score"])}
+        {"date": d, "score": int(row[score_col])}
         for d, row in fired.iterrows()
     ]
 
@@ -70,6 +75,7 @@ def run_backtest(threshold: int, data: dict, signals_df, period: str) -> dict:
         "run_date":      str(date.today()),
         "data_range":    data_range,
         "period":        period,
+        "mode":          mode,
         "threshold":     threshold,
         "total_signals": metrics.get("total_signals", 0),
         "metrics":       metrics,
@@ -98,8 +104,10 @@ def print_summary(result: dict):
             return "N/A"
         return f"{v:+.2f}%"
 
+    mode_label = "BEARISH (SPY↓ filter)" if result.get("mode") == "bearish" else "STRESS (volatility)"
     print(f"\nGeoRisk Stress Backtest  ({result['data_range']})")
     print("━" * 50)
+    print(f"Mode          : {mode_label}")
     print(f"Threshold     : score >= {result['threshold']}")
     print(f"Signals fired : {result['total_signals']}")
     print(f"Hit rate (3d) : {fmt_pct(hr3)}")
@@ -123,6 +131,10 @@ def main():
         help="Data period for yfinance (default: 2y)"
     )
     parser.add_argument(
+        "--mode", choices=["stress", "bearish"], default="stress",
+        help="stress=순수 변동성 신호, bearish=SPY 하락일 필터링 (default: stress)"
+    )
+    parser.add_argument(
         "--output-dir", default=str(RESULTS_DIR),
         help="Directory for JSON output files"
     )
@@ -144,11 +156,11 @@ def main():
     today_str = date.today().strftime("%Y%m%d")
 
     for threshold in args.threshold:
-        print(f"\nRunning backtest: threshold={threshold} ...")
-        result = run_backtest(threshold, data, signals_df, args.period)
+        print(f"\nRunning backtest: threshold={threshold}, mode={args.mode} ...")
+        result = run_backtest(threshold, data, signals_df, args.period, mode=args.mode)
         print_summary(result)
 
-        out_path = out_dir / f"backtest_threshold{threshold}_{today_str}.json"
+        out_path = out_dir / f"backtest_{args.mode}_threshold{threshold}_{today_str}.json"
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         print(f"Saved: {out_path}")

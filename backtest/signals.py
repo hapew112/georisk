@@ -74,14 +74,22 @@ def compute_signals(data: dict) -> pd.DataFrame:
         + gold_rush.astype(int)
     )
 
+    # bearish 모드: SPY 당일 -0.5% 이상 하락일에만 stress 조건 카운트
+    spy_ret     = spy["Close"].pct_change()
+    spy_falling = spy_ret < -0.005
+    bearish_score = stress_score.where(spy_falling, other=0)
+
     result = pd.DataFrame({
-        "date":         idx,
-        "vix_spike":    vix_spike,
-        "dollar_surge": dollar_surge,
-        "oil_spike":    oil_spike,
-        "yield_jump":   yield_jump,
-        "gold_rush":    gold_rush,
-        "stress_score": stress_score,
+        "date":          idx,
+        "vix_spike":     vix_spike,
+        "dollar_surge":  dollar_surge,
+        "oil_spike":     oil_spike,
+        "yield_jump":    yield_jump,
+        "gold_rush":     gold_rush,
+        "stress_score":  stress_score,
+        "spy_ret":       spy_ret,
+        "spy_falling":   spy_falling,
+        "bearish_score": bearish_score,
     })
     result["stress_label"] = result["stress_score"].apply(label_stress)
     result = result.set_index("date")
