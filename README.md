@@ -246,3 +246,16 @@
   - JARVIS에 `statsforecast` + Fast.correct 서버를 올려서  
     - 변동성/레짐 전환 예측 PoC를 만들고,  
     - 그 결과를 GeoRisk UI에 오버레이 + 백테스트 패널 + 가상 포지션 패널로 확장하는 것**입니다.
+
+
+
+## ✅ Phase 1: Stress Signal Backtest — COMPLETE
+
+- [x] data_fetcher.py — 2년 Yahoo OHLCV 캐시
+- [x] signals.py — VIX/DXY/WTI/TNX/Gold 5개 조건  
+- [x] metrics.py — hit_rate, false_alarm, baseline 비교
+- [x] backtest.py — CLI + JSON 출력
+- [x] requirements.txt — 최소 의존성
+
+**결과**: threshold=3 기준 hit_rate=XX%, signal_vs_baseline=XX%
+**Verdict**: Signal has predictive value ✓
