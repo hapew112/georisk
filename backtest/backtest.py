@@ -47,7 +47,7 @@ def simulate_portfolio(data: dict, regimes_df: pd.DataFrame,
         daily_log        : pd.DataFrame (일별 상세 기록)
     """
     spy_close = data["SPY"]["Close"]
-    tlt_close = data.get("TLT", pd.DataFrame()).get("Close")
+    tlt_close = data.get("SGOV", pd.DataFrame()).get("Close")
 
     # 레짐 df와 SPY의 공통 인덱스만 사용
     common_idx = regimes_df.index.intersection(spy_close.index)
@@ -103,7 +103,7 @@ def simulate_portfolio(data: dict, regimes_df: pd.DataFrame,
             "tlt_weight": tlt_w,
             "cash_weight": cash_w,
             "spy_return": round(r_spy * 100, 4),
-            "tlt_return": round(r_tlt * 100, 4),
+            "sgov_return": round(r_tlt * 100, 4),
             "portfolio_return": round(port_ret * 100, 4),
             "benchmark_value": round(benchmark.iloc[i], 2),
             "strategy_value": round(new_val, 2),

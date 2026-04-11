@@ -15,7 +15,7 @@ import yfinance as yf
 CORE_SYMBOLS = [
     "SPY",        # S&P 500 ETF
     "^VIX",       # 변동성지수
-    "TLT",        # 20년+ 장기국채 ETF
+    "SGOV",       # 초단기 국채 ETF (금리 둔감)
     "^TNX",       # 미국 10년물 국채 금리
     "^IRX",       # 미국 3개월 국채 금리 (수익률곡선 inversion용)
     "DX-Y.NYB",   # 달러 인덱스

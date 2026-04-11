@@ -26,10 +26,10 @@ REGIME_NAMES = ["CALM", "NORMAL", "ELEVATED", "CRISIS"]
 
 # 레짐별 기본 포트폴리오 배분 (SPY, TLT, Cash)
 DEFAULT_WEIGHTS = {
-    "CALM":     {"SPY": 1.00, "TLT": 0.00, "cash": 0.00},
-    "NORMAL":   {"SPY": 0.80, "TLT": 0.15, "cash": 0.05},
-    "ELEVATED": {"SPY": 0.45, "TLT": 0.35, "cash": 0.20},
-    "CRISIS":   {"SPY": 0.15, "TLT": 0.45, "cash": 0.40},
+    "CALM":     {"SPY": 0.95, "SGOV": 0.00, "cash": 0.05},
+    "NORMAL":   {"SPY": 0.85, "SGOV": 0.10, "cash": 0.05},
+    "ELEVATED": {"SPY": 0.60, "SGOV": 0.30, "cash": 0.10},
+    "CRISIS":   {"SPY": 0.30, "SGOV": 0.50, "cash": 0.20},
 }
 
 
@@ -51,23 +51,7 @@ def _score_vix(vix_val: float) -> int:
         return 3      # 위기
 
 
-def _score_yield_curve(tnx_val: float, irx_val: float) -> int:
-    """
-    수익률 곡선 역전 점수.
-    10Y(^TNX) - 3M(^IRX) 스프레드.
-    역전(음수) = 경기침체 신호.
-    """
-    if np.isnan(tnx_val) or np.isnan(irx_val):
-        return 0
-    spread = tnx_val - irx_val
-    if spread > 1.0:
-        return 0      # 정상적 양의 기울기
-    elif spread > 0.0:
-        return 1      # 평탄화 진행 중
-    elif spread > -0.5:
-        return 2      # 역전 시작
-    else:
-        return 3      # 깊은 역전 (강한 침체 신호)
+
 
 
 def _score_dollar(dxy_pct_20d: float) -> int:
@@ -135,9 +119,9 @@ def classify_regime(composite_score: float) -> str:
     """
     if composite_score <= 1:
         return "CALM"
-    elif composite_score <= 3:
+    elif composite_score <= 4:
         return "NORMAL"
-    elif composite_score <= 6:
+    elif composite_score <= 7:
         return "ELEVATED"
     else:
         return "CRISIS"
@@ -196,11 +180,28 @@ def compute_regimes(data: dict) -> pd.DataFrame:
     dxy_pct_20d = dxy.pct_change(20) * 100       # 20일 변화율(%)
     oil_pct_5d  = oil.pct_change(5) * 100         # 5일 변화율(%)
 
+    # 수익률 곡선 연속 역전일 계산 (지속성 필터)
+    curve_spread = tnx - irx
+    is_inverted = curve_spread < 0
+    inv_group = (~is_inverted).cumsum()
+    consec_inv = is_inverted.groupby(inv_group).cumsum().where(is_inverted, 0)
+
     # 일별 스코어링
     records = []
     for dt in idx:
         vs  = _score_vix(vix.get(dt, np.nan))
-        ycs = _score_yield_curve(tnx.get(dt, np.nan), irx.get(dt, np.nan))
+        
+        spread = curve_spread.get(dt, float('nan'))
+        days_inv = int(consec_inv.get(dt, 0))
+        if spread != spread or spread > 1.0:   # nan or steep normal
+            ycs = 0
+        elif spread > 0.0:                     # flattening
+            ycs = 1
+        elif days_inv < 60:                    # new inversion
+            ycs = 1
+        else:                                  # sustained 60d+
+            ycs = 2
+
         ds  = _score_dollar(dxy_pct_20d.get(dt, np.nan))
         ss  = _score_sma200(spy.get(dt, np.nan), spy_sma200.get(dt, np.nan))
         os_ = _score_oil(oil_pct_5d.get(dt, np.nan))
@@ -219,7 +220,7 @@ def compute_regimes(data: dict) -> pd.DataFrame:
             "composite_score":   composite,
             "regime":            regime,
             "spy_weight":        weights.get("SPY", 0),
-            "tlt_weight":        weights.get("TLT", 0),
+            "tlt_weight":        weights.get("SGOV", 0),
             "cash_weight":       weights.get("cash", 0),
         })
 
