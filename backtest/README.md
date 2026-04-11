@@ -254,11 +254,11 @@ RAM usage: ~200MB. No GPU. Runs on JARVIS (8GB) easily.
 ```
 Phase 1 — Signal Quality (now)
   ✓ Design doc
-  □ data_fetcher.py
-  □ signals.py (stress + VIX regime)  
-  □ backtest.py (signal → outcome)
-  □ metrics.py (Sharpe, MDD, Kelly)
-  □ First run + results analysis
+  [x] data_fetcher.py
+  [x] signals.py (stress + VIX regime)  
+  [x] backtest.py (signal → outcome)
+  [x] metrics.py (Sharpe, MDD, Kelly)
+  [x] First run + results analysis
 
 Phase 2 — Paper Trading (after Phase 1 passes)
   □ Live signal generator (daily cron on JARVIS)
