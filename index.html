@@ -477,6 +477,16 @@ a{color:inherit;text-decoration:none;}
 .pf-sum-label{font-size:10px;color:var(--text2);font-family:var(--mono);}
 .pf-sum-val{font-size:11px;font-family:var(--mono);font-weight:600;color:var(--text);}
 
+.regime-badge{display:inline-block;padding:4px 14px;border-radius:2px;font-size:13px;font-weight:700;font-family:var(--mono);letter-spacing:1px;margin-bottom:8px;}
+.regime-badge.CALM{background:rgba(0,229,255,.15);color:#00e5ff;border:1px solid rgba(0,229,255,.3);}
+.regime-badge.NORMAL{background:rgba(160,160,160,.1);color:#a0a0a0;border:1px solid rgba(160,160,160,.2);}
+.regime-badge.ELEVATED{background:rgba(255,170,0,.15);color:#ffaa00;border:1px solid rgba(255,170,0,.3);}
+.regime-badge.CRISIS{background:rgba(255,45,85,.15);color:#ff2d55;border:1px solid rgba(255,45,85,.3);}
+.regime-weights{font-size:11px;color:var(--text2);font-family:var(--mono);margin:4px 0 8px;}
+.regime-metric-row{display:flex;gap:16px;flex-wrap:wrap;}
+.regime-metric{font-size:10px;color:var(--text3);font-family:var(--mono);}
+.regime-metric span{color:var(--text);font-size:11px;}
+
 /* 익스포저 패널 */
 .pf-exposure{flex:1;overflow-y:auto;padding:8px;}
 .pf-exp-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--border);margin-bottom:2px;}
@@ -1197,6 +1207,19 @@ a{color:inherit;text-decoration:none;}
             <div class="pf-section-hdr">🌍 지정학 리스크 익스포저</div>
             <div class="pf-exposure" id="pf-exposure">
               <div class="pf-empty">포지션 또는 워치리스트를 추가하면 관련 국가 Z-score가 표시됩니다</div>
+            </div>
+          </div>
+
+          <!-- GeoRisk Regime Panel -->
+          <div class="pf-col pf-col-wide" style="margin-top:12px;">
+            <div class="pf-section-hdr">
+              🛡 GeoRisk 레짐 분석
+              <span style="font-size:9px;color:var(--text3);font-weight:400;margin-left:8px;" id="regime-updated">--</span>
+            </div>
+            <div id="regime-widget" style="padding:8px 0;">
+              <div class="regime-badge NORMAL" id="regime-label">NORMAL</div>
+              <div class="regime-weights" id="regime-weights">SPY: 80% | TLT: 15% | Cash: 5%</div>
+              <div class="regime-metric-row" id="regime-metrics"></div>
             </div>
           </div>
 
@@ -3105,7 +3128,7 @@ function switchMainTab(id,el){
   // Overview 탭 진입 시 데이터 갱신
   if(id==='overview') fetchOverview();
   // Portfolio 탭 진입 시 렌더
-  if(id==='portfolio') _pfOnTabEnter();
+  if(id==='portfolio') { _pfOnTabEnter(); fetchRegime(); }
   // Energy 탭 진입 시 원자재 스트립 렌더
   if(id==='energy') renderCommodityStrip();
   // 히트맵 탭 첫 진입 시 초기화
@@ -3949,6 +3972,30 @@ document.addEventListener('keydown', e=>{
     if(authModal&&authModal.style.display!=='none') pfHideAuthModal();
   }
 });
+
+async function fetchRegime() {
+  try {
+    const d = await fetch('/api/regime').then(r => r.json());
+    const label = document.getElementById('regime-label');
+    label.textContent = d.regime || 'NORMAL';
+    label.className = 'regime-badge ' + (d.regime || 'NORMAL');
+    const spy = Math.round((d.spy_weight || 0.8) * 100);
+    const tlt = Math.round((d.tlt_weight || 0.15) * 100);
+    const cash = Math.round((d.cash_weight || 0.05) * 100);
+    document.getElementById('regime-weights').textContent = `SPY: ${spy}% | TLT: ${tlt}% | Cash: ${cash}%`;
+    const upd = d.last_updated || d.run_date || null;
+    document.getElementById('regime-updated').textContent = upd ? `업데이트: ${upd}` : '데이터 없음';
+    const m = d.metrics || {};
+    const rows = [];
+    if (m.strategy_mdd != null) rows.push(`MDD <span>${(m.strategy_mdd*100).toFixed(1)}%</span>`);
+    if (m.strategy_cagr != null) rows.push(`CAGR <span>${(m.strategy_cagr*100).toFixed(1)}%</span>`);
+    if (m.sharpe != null) rows.push(`Sharpe <span>${m.sharpe.toFixed(2)}</span>`);
+    if (m.mdd_improvement_pct != null) rows.push(`MDD개선 <span>+${m.mdd_improvement_pct.toFixed(1)}%</span>`);
+    document.getElementById('regime-metrics').innerHTML = rows.map(r => `<div class="regime-metric">${r}</div>`).join('');
+  } catch(e) {
+    console.warn('regime fetch failed', e);
+  }
+}
 
 // switchMainTab에 portfolio 훅 (별도 — 탭 진입 시 렌더)
 const _origSwitch = switchMainTab;
