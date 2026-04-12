@@ -1,187 +1,148 @@
 import argparse
+import sys
 import json
 import os
+import math
 from datetime import datetime
-import pandas as pd
-import numpy as np
-
 from data_fetcher import fetch_all
 from signals import compute_signals
-from metrics import compute_metrics
+from metrics import signal_quality, portfolio_comparison, kelly_criterion
+import config
 
-def run_backtest(period, initial_capital):
-    # Fetch data
-    data = fetch_all(period=period)
-    
-    # Compute signals
-    signals_df = compute_signals(data)
-    
-    spy = data.get('SPY')
-    tlt = data.get('TLT')
-    schd = data.get('SCHD')
-    
-    if spy is None:
-        raise ValueError("SPY data is required")
-        
-    dates = spy.index
-    signals_df.index = dates
-    
-    # Daily returns
-    spy_ret = spy['Close'].pct_change().fillna(0)
-    tlt_ret = tlt['Close'].pct_change().fillna(0) if tlt is not None else pd.Series(0, index=dates)
-    schd_ret = schd['Close'].pct_change().fillna(0) if schd is not None else pd.Series(0, index=dates)
-    
-    # Portfolios
-    bench_val = [initial_capital]
-    strat_val = [initial_capital]
-    
-    bench_holdings = initial_capital
-    
-    # GeoRisk state
-    curr_signal = 'HOLD'
-    strat_cash = 0
-    strat_spy = initial_capital
-    strat_tlt = 0
-    strat_schd = 0
-    
-    bench_equity = pd.Series(index=dates, dtype=float)
-    strat_equity = pd.Series(index=dates, dtype=float)
-    
-    FEE_RATE = 0.0025
-    USD_KRW = 1350
-    TAX_THRESHOLD_KRW = 2500000
-    TAX_RATE = 0.22
-    
-    # Tax tracking per year
-    realized_gains_usd = 0
-    cost_basis_spy = initial_capital
-    cost_basis_tlt = 0
-    cost_basis_schd = 0
-    
-    for i, date in enumerate(dates):
-        # Apply market moves (after day 1)
-        if i > 0:
-            bench_holdings *= (1 + spy_ret.iloc[i])
+def run_backtest(periods):
+    for period in periods:
+        data = fetch_all(period)
+        if "SPY" not in data or "TLT" not in data:
+            print("Missing core symbols. Skipping.")
+            continue
             
-            strat_spy *= (1 + spy_ret.iloc[i])
-            strat_tlt *= (1 + tlt_ret.iloc[i])
-            strat_schd *= (1 + schd_ret.iloc[i])
-        
-        bench_equity.iloc[i] = bench_holdings
-        total_strat = strat_cash + strat_spy + strat_tlt + strat_schd
-        
-        # Determine signal action for today
-        sig = signals_df['signal'].iloc[i]
-        vix_regime = signals_df['vix_regime'].iloc[i]
-        stress = signals_df['stress_score'].iloc[i]
-        
-        # CRISIS logic from prompt
-        if vix_regime == 'CRISIS' or stress >= 3:
-            target_sig = 'CRISIS'
-        else:
-            target_sig = sig
+        signals = compute_signals(data)
+        if signals.empty:
+            print("Failed to compute signals.")
+            continue
             
-        if target_sig != curr_signal:
-            # Rebalance
-            if target_sig == 'HOLD':
-                w_spy, w_tlt, w_schd, w_cash = 1.0, 0.0, 0.0, 0.0
-            elif target_sig == 'DEFENSIVE':
-                w_spy, w_tlt, w_schd, w_cash = 0.7, 0.2, 0.1, 0.0
-            elif target_sig == 'CRISIS':
-                w_spy, w_tlt, w_schd, w_cash = 0.45, 0.25, 0.25, 0.05
-            else:
-                w_spy, w_tlt, w_schd, w_cash = 1.0, 0.0, 0.0, 0.0
+        spy_df = data["SPY"]
+        tlt_df = data["TLT"]
+        
+        quality = signal_quality(signals, spy_df)
+        portfolio = portfolio_comparison(signals, spy_df, tlt_df, config.PORTFOLIO_ALLOCATIONS)
+        
+        returns_3d = []
+        for s in quality["individual_signals"]:
+            if "ret_3d" in s:
+                returns_3d.append(s["ret_3d"])
+        
+        wins = [-r for r in returns_3d if r < 0]
+        losses = [r for r in returns_3d if r >= 0]
+        avg_win_3d = math.fsum(wins)/len(wins) if wins else 0
+        avg_loss_3d = math.fsum(losses)/len(losses) if losses else 0
+        
+        kelly_f = kelly_criterion(quality.get("hit_rate_3d", 0), avg_win_3d, avg_loss_3d)
+        kelly_pct = kelly_f * 100 if kelly_f > 0 else 0
+        
+        worst_case_date = "N/A"
+        worst_dd = 0
+        for s in quality["individual_signals"]:
+            if "dd_5d" in s and s["dd_5d"] < worst_dd:
+                worst_dd = s["dd_5d"]
+                worst_case_date = s["date"]
                 
-            new_spy = total_strat * w_spy
-            new_tlt = total_strat * w_tlt
-            new_schd = total_strat * w_schd
-            new_cash = total_strat * w_cash
-            
-            # Calculate trades
-            trade_spy = new_spy - strat_spy
-            trade_tlt = new_tlt - strat_tlt
-            trade_schd = new_schd - strat_schd
-            
-            # Fees
-            fees = (abs(trade_spy) + abs(trade_tlt) + abs(trade_schd)) * FEE_RATE
-            
-            # Realized gains calculation (simplified average cost basis)
-            if trade_spy < 0 and strat_spy > 0:
-                fraction_sold = -trade_spy / strat_spy
-                gain = -trade_spy - (cost_basis_spy * fraction_sold)
-                realized_gains_usd += gain
-                cost_basis_spy -= (cost_basis_spy * fraction_sold)
-            elif trade_spy > 0:
-                cost_basis_spy += trade_spy
-                
-            if trade_tlt < 0 and strat_tlt > 0:
-                fraction_sold = -trade_tlt / strat_tlt
-                gain = -trade_tlt - (cost_basis_tlt * fraction_sold)
-                realized_gains_usd += gain
-                cost_basis_tlt -= (cost_basis_tlt * fraction_sold)
-            elif trade_tlt > 0:
-                cost_basis_tlt += trade_tlt
-                
-            if trade_schd < 0 and strat_schd > 0:
-                fraction_sold = -trade_schd / strat_schd
-                gain = -trade_schd - (cost_basis_schd * fraction_sold)
-                realized_gains_usd += gain
-                cost_basis_schd -= (cost_basis_schd * fraction_sold)
-            elif trade_schd > 0:
-                cost_basis_schd += trade_schd
-            
-            total_strat -= fees
-            if total_strat < 0:
-                total_strat = 0
-            
-            # Apply after fees
-            strat_spy = total_strat * w_spy
-            strat_tlt = total_strat * w_tlt
-            strat_schd = total_strat * w_schd
-            strat_cash = total_strat * w_cash
-            
-            curr_signal = target_sig
+        calm_days = signals[signals['regime'] == "CALM"]
+        norm_days = signals[signals['regime'] == "NORMAL"]
+        elev_days = signals[signals['regime'] == "ELEVATED"]
+        cris_days = signals[signals['regime'] == "CRISIS"]
         
-        strat_equity.iloc[i] = strat_spy + strat_tlt + strat_schd + strat_cash
+        def regime_ret(days_df):
+            if len(days_df) == 0: return 0.0
+            rets = []
+            spy_closes = spy_df['Close'].tolist()
+            spy_dates = spy_df.index
+            for d in days_df['date']:
+                try:
+                    idx = spy_dates.get_loc(d)
+                    if idx + 3 < len(spy_closes):
+                        rets.append((spy_closes[idx+3] / spy_closes[idx]) - 1)
+                except KeyError:
+                    pass
+            return sum(rets)/len(rets)*100 if rets else 0.0
+
+        n_calm = len(calm_days)
+        n_norm = len(norm_days)
+        n_elev = len(elev_days)
+        n_cris = len(cris_days)
         
-        # End of year tax
-        if i == len(dates) - 1 or date.year != dates[i+1].year:
-            gain_krw = realized_gains_usd * USD_KRW
-            if gain_krw > TAX_THRESHOLD_KRW:
-                tax_krw = (gain_krw - TAX_THRESHOLD_KRW) * TAX_RATE
-                tax_usd = tax_krw / USD_KRW
-                if strat_equity.iloc[i] > 0:
-                    tax_ratio = tax_usd / strat_equity.iloc[i]
-                    strat_spy *= (1 - tax_ratio)
-                    strat_tlt *= (1 - tax_ratio)
-                    strat_schd *= (1 - tax_ratio)
-                    strat_cash *= (1 - tax_ratio)
-                    strat_equity.iloc[i] -= tax_usd
-                    # Reduce cost basis proportionally
-                    cost_basis_spy *= (1 - tax_ratio)
-                    cost_basis_tlt *= (1 - tax_ratio)
-                    cost_basis_schd *= (1 - tax_ratio)
-            realized_gains_usd = 0
+        calm_ret = regime_ret(calm_days)
+        norm_ret = regime_ret(norm_days)
+        elev_ret = regime_ret(elev_days)
+        cris_ret = regime_ret(cris_days)
+        
+        start_date = data["SPY"].index[0].strftime("%Y-%m-%d")
+        end_date = data["SPY"].index[-1].strftime("%Y-%m-%d")
+        
+        hit_rate_3d = quality.get("hit_rate_3d", 0) * 100
+        hit_rate_5d = quality.get("hit_rate_5d", 0) * 100
+        n_hits_3d = int(quality["total_signals"] * quality.get("hit_rate_3d", 0))
+        
+        report = f"""
+GeoRisk Stress Backtest ({start_date} → {end_date}, {period})
+═══════════════════════════════════════════════════════
+
+Signal Summary (stress>={config.SIGNAL_MIN_STRESS} OR regime>={config.SIGNAL_MIN_REGIME})
+  Signals fired:    {quality['total_signals']} times
+  Hit rate (3d):    {hit_rate_3d:.1f}%  ({n_hits_3d}/{quality['total_signals']} → SPY dropped)
+  Hit rate (5d):    {hit_rate_5d:.1f}%
+  Avg return 3d:    {quality.get('avg_return_3d', 0):.2f}%  (baseline: {quality.get('baseline_avg_3d', 0):.2f}%)
+  Avg drawdown 5d:  {quality.get('avg_drawdown_5d', 0):.2f}%
+  Worst case:       {quality.get('worst_case_5d', 0):.2f}%  ({worst_case_date})
+  False alarms:     {quality.get('false_alarm_rate', 0)*100:.1f}%
+  Edge vs baseline: {quality.get('edge', 0):.2f}%
+
+VIX Regime Breakdown
+  CALM (VIX<15):     {n_calm} days, avg 3d ret: {calm_ret:.2f}%
+  NORMAL (15-20):    {n_norm} days, avg 3d ret: {norm_ret:.2f}%
+  ELEVATED (20-28):  {n_elev} days, avg 3d ret: {elev_ret:.2f}%
+  CRISIS (28+):      {n_cris} days, avg 3d ret: {cris_ret:.2f}%
+
+Portfolio Comparison ({period})
+  Buy & Hold:    CAGR {portfolio['bh_cagr']:.1f}%, Sharpe {portfolio['bh_sharpe']:.2f}, MDD {portfolio['bh_mdd']:.1f}%
+  GeoRisk:       CAGR {portfolio['gr_cagr']:.1f}%, Sharpe {portfolio['gr_sharpe']:.2f}, MDD {portfolio['gr_mdd']:.1f}%
+  MDD delta:     {portfolio['mdd_delta']:.1f}% (improvement)
+  Sharpe delta:  {portfolio['sharpe_delta']:.2f}
+
+Kelly Criterion
+  kelly_f: {kelly_f:.3f} → recommended max position: {kelly_pct:.1f}%
+"""
+        print(report.strip())
+        print()
+        
+        today = datetime.now().strftime("%Y-%m-%d")
+        os.makedirs(config.RESULTS_DIR, exist_ok=True)
+        json_path = os.path.join(config.RESULTS_DIR, f"{today}_{period}_backtest.json")
+        
+        def sanitize(obj):
+            if isinstance(obj, float) and math.isnan(obj): return None
+            return obj
             
-    metrics = compute_metrics(bench_equity, strat_equity, signals_df, spy)
-    
-    print(json.dumps(metrics, indent=2))
-    
-    results_dir = os.path.expanduser("~/georisk/results")
-    if not os.path.exists(results_dir):
-        os.makedirs(results_dir)
-        
-    date_str = datetime.now().strftime("%Y%m%d")
-    out_file = os.path.join(results_dir, f"georisk_v6_{date_str}.json")
-    with open(out_file, "w") as f:
-        json.dump(metrics, f, indent=2)
-        
-    print(f"Saved results to {out_file}")
+        out_data = {
+            "period": period,
+            "start_date": start_date,
+            "end_date": end_date,
+            "quality": {k: sanitize(v) for k, v in quality.items()},
+            "portfolio": {k: sanitize(v) for k, v in portfolio.items()},
+            "kelly": sanitize(kelly_f),
+            "regimes": {
+                "calm": {"days": n_calm, "ret": sanitize(calm_ret)},
+                "normal": {"days": n_norm, "ret": sanitize(norm_ret)},
+                "elevated": {"days": n_elev, "ret": sanitize(elev_ret)},
+                "crisis": {"days": n_cris, "ret": sanitize(cris_ret)}
+            }
+        }
+        with open(json_path, "w") as f:
+            json.dump(out_data, f, indent=2)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--period", type=str, default="5y")
-    parser.add_argument("--initial", type=float, default=10000)
+    parser.add_argument("--period", nargs="+", default=["3y"])
     args = parser.parse_args()
     
-    run_backtest(args.period, args.initial)
+    run_backtest(args.period)
