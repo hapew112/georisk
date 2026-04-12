@@ -68,7 +68,48 @@
 
 ---
 
+## Signal: VIX Mean Reversion (v2)
+
+Previous approach (v1): 5-condition daily stress score.
+Result: Kelly -1.0, false alarm 67%. No edge. Deprecated.
+
+Current approach (v2): VIX Z-Score mean reversion.
+- Compute VIX 20-day moving average and standard deviation
+- Z-Score = (VIX_today - SMA20) / STD20
+- DEFENSIVE when Z > 2.0 (VIX spiking far above normal)
+- Combined with VIX regime allocation
+
+### Why This Works
+- Daily spikes (v1) are noise. Most single-day moves mean nothing.
+- VIX deviation from its own trend (v2) captures structural stress.
+- When VIX is 2 standard deviations above its 20-day mean,
+  something systemic is happening, not just a bad day.
+
+### Backtest Results (v2)
+
+| Period | CAGR | MDD | Sharpe | HitRate | Kelly |
+|--------|------|-----|--------|---------|-------|
+| 2y     | 32.7%| -7.4%| 2.07   | 60.3%   | 0.25  |
+| 3y     | 34.3%| -7.4%| 2.23   | 61.5%   | 0.25  |
+| 5y     | 25.5%| -15.0%| 1.52   | 55.2%   | 0.18  |
+| vs B&H (3y) | 20.0%| -18.8%| 0.98 | -       | -     |
+
+Signal evolution:
+- v1 (stress score): Kelly -1.0, no edge → deprecated
+- v2 (VIX mean reversion): Kelly 0.25, Sharpe 2.04~2.23 → adopted
+
 ## 3. 앞으로 구현할 것: 2026년 3~6개월 로드맵 (구체 작업 리스트)
+
+Phase 1 — Signal Quality
+  ✓ Design doc
+  ✓ data_fetcher.py
+  ✓ signals.py v1 (stress score) — deprecated, no edge
+  ✓ signals.py v2 (VIX mean reversion) — adopted
+  ✓ backtest.py + breakdown analysis
+  ✓ metrics.py (fixed Kelly calculation)
+  ✓ alt_signals.py (A/B/C comparison)
+  ✓ Out-of-sample validation (2y/3y/5y)
+  □ Paper trading (Phase 2)
 
 아래는 **“지금까지 한 것 + 앞으로 할 것”을 섞어서 만든 실전 작업 목록**입니다.
 

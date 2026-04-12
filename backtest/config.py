@@ -42,6 +42,11 @@ VIX_REGIMES = {
 SIGNAL_MIN_STRESS = 2
 SIGNAL_MIN_REGIME = "ELEVATED"  # CALM < NORMAL < ELEVATED < CRISIS
 
+# VIX Mean Reversion thresholds
+VIX_ZSCORE_DEFENSIVE = 2.0    # go defensive when VIX 2 std above mean
+VIX_ZSCORE_AGGRESSIVE = -1.0  # opportunity when VIX 1 std below mean
+VIX_SMA_PERIOD = 20
+
 # Lookforward windows (days after signal)
 FORWARD_WINDOWS = [1, 3, 5, 10]
 
