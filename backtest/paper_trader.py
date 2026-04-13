@@ -14,7 +14,7 @@ from signals import compute_signals
 LOG_PATH = os.path.expanduser("~/georisk/paper_log.json")
 
 # ── Realistic cost model ───────────────────────────────────────────────────
-FEE_TRADE_RATE = 0.001              # 0.1% per side (매수/매도 각각)
+FEE_TRADE_RATE = 0.00015            # 0.015% per side (키움증권 실제 요율)
 FEE_FX_RATE    = 0.002              # 0.2% KRW↔USD 환전 스프레드
 DIV_DAILY_SPY  = 0.013 * 0.15 / 252  # SPY ~1.3%/yr, 15% 원천징수 → 일별
 DIV_DAILY_TLT  = 0.035 * 0.15 / 252  # TLT ~3.5%/yr, 15% 원천징수 → 일별

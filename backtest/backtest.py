@@ -35,13 +35,13 @@ def run_backtest(periods):
             edge_ret = gr_r[active] - bh_r[active]
             wins = edge_ret[edge_ret > 0]
             losses = edge_ret[edge_ret <= 0]
-            w = wins.mean() if len(wins) > 0 else 0
-            l = losses.mean() if len(losses) > 0 else 0
-            hr = len(wins) / len(edge_ret)
+            avg_win = wins.mean() if len(wins) > 0 else 0
+            avg_loss = losses.mean() if len(losses) > 0 else 0
+            hit_rate = len(wins) / len(edge_ret)
         else:
-            w = 0; l = 0; hr = 0
+            avg_win = 0; avg_loss = 0; hit_rate = 0
 
-        kelly_f = kelly_criterion(hr, w, abs(l))
+        kelly_f = kelly_criterion(hit_rate, avg_win, abs(avg_loss))
         kelly_pct = kelly_f * 100 if kelly_f > 0 else 0
         
         worst_case_date = "N/A"
@@ -114,7 +114,7 @@ Portfolio Comparison ({period})
   Sharpe delta:  {portfolio['sharpe_delta']:.2f}
 
 Kelly Criterion (Portfolio basis)
-  Hit Rate: {hr*100:.1f}%, Avg Win: {w*100:.4f}%, Avg Loss: {abs(l)*100:.4f}%
+  Hit Rate: {hit_rate*100:.1f}%, Avg Win: {avg_win*100:.4f}%, Avg Loss: {abs(avg_loss)*100:.4f}%
   kelly_f: {kelly_f:.3f} → recommended max position: {kelly_pct:.1f}%
 """
         print(report.strip())

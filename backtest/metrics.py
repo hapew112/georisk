@@ -16,7 +16,6 @@ def signal_quality(signals_df: pd.DataFrame, spy_df: pd.DataFrame) -> dict:
     
     def_days = signals_df[signals_df['action'] == "DEFENSIVE"]
     total_signals = len(def_days)
-    spy_dates = spy_df.index.tolist()
     spy_closes = spy_df['Close'].tolist()
     
     for _, row in def_days.iterrows():
@@ -125,10 +124,14 @@ def portfolio_comparison(signals_df, spy_df, tlt_df, allocations) -> dict:
         "bh_mdd": bh_mdd * 100,
         "bh_sharpe": bh_sharpe,
         "bh_calmar": abs(bh_cagr / bh_mdd) if bh_mdd != 0 else 0,
+        "bh_var95": calc_var(bh_ret.fillna(0)),
+        "bh_cvar95": calc_cvar(bh_ret.fillna(0)),
         "gr_cagr": gr_cagr * 100,
         "gr_mdd": gr_mdd * 100,
         "gr_sharpe": gr_sharpe,
         "gr_calmar": abs(gr_cagr / gr_mdd) if gr_mdd != 0 else 0,
+        "gr_var95": calc_var(gr_ret.fillna(0)),
+        "gr_cvar95": calc_cvar(gr_ret.fillna(0)),
         "cagr_delta": (gr_cagr - bh_cagr) * 100,
         "mdd_delta": (abs(bh_mdd) - abs(gr_mdd)) * 100,
         "sharpe_delta": gr_sharpe - bh_sharpe,
@@ -172,3 +175,17 @@ def calc_cagr(equity_curve, years) -> float:
     start_val = equity_curve.iloc[0]
     if start_val == 0: return 0.0
     return float((end_val / start_val)**(1/years) - 1)
+
+def calc_var(returns_series, confidence=0.95) -> float:
+    """Historical VaR at given confidence level (returned as positive loss %)."""
+    if len(returns_series) == 0: return 0.0
+    return float(-np.percentile(returns_series.dropna(), (1 - confidence) * 100) * 100)
+
+def calc_cvar(returns_series, confidence=0.95) -> float:
+    """Expected Shortfall (CVaR) — mean of losses beyond VaR threshold."""
+    if len(returns_series) == 0: return 0.0
+    clean = returns_series.dropna()
+    threshold = np.percentile(clean, (1 - confidence) * 100)
+    tail = clean[clean <= threshold]
+    if len(tail) == 0: return 0.0
+    return float(-tail.mean() * 100)

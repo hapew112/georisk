@@ -13,7 +13,6 @@ REGIME_EMOJI = {
 
 
 def send(text: str) -> bool:
-    """Send a Telegram message. Returns True on success, False on failure."""
     if not BOT_TOKEN or not CHAT_ID:
         return False
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
