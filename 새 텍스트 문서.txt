@@ -237,6 +237,20 @@ export default {
         });
       }
 
+      if (path === '/api/paper') {
+        try {
+          const raw = env.GEORISK_REGIME ? await env.GEORISK_REGIME.get('paper_summary') : null;
+          if (!raw) {
+            return json({ error: 'No paper data yet', trading_days: 0 });
+          }
+          return new Response(raw, {
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        } catch(e) {
+          return err('Paper data failed: ' + e.message, 500);
+        }
+      }
+
       if (path === '/api/regime') {
         try {
           const raw = env.GEORISK_REGIME ? await env.GEORISK_REGIME.get('latest_regime') : null;
