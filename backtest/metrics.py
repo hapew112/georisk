@@ -79,12 +79,22 @@ def portfolio_comparison(signals_df, spy_df, tlt_df, allocations) -> dict:
     
     bh_ret = df['spy_ret']
     
-    sig_regime = signals_df.set_index('date')['regime'].reindex(df.index).fillna("CALM")
+    # Use both regime and action for allocation decisions
+    sig_data = signals_df.set_index('date')[['regime', 'action']].reindex(df.index)
+    sig_data['regime'] = sig_data['regime'].fillna("CALM")
+    sig_data['action'] = sig_data['action'].fillna("HOLD")
     
     gr_ret = pd.Series(0.0, index=df.index)
     
-    for date, regime in sig_regime.items():
-        alloc = allocations.get(regime, allocations["CALM"])
+    for date, row in sig_data.iterrows():
+        regime = row['regime']
+        action = row['action']
+        
+        # If action is DEFENSIVE, use CRISIS allocation (tactical override)
+        # Otherwise use the market regime allocation
+        alloc_regime = "CRISIS" if action == "DEFENSIVE" else regime
+        
+        alloc = allocations.get(alloc_regime, allocations["CALM"])
         w_spy = alloc.get("SPY", 1.0)
         w_tlt = alloc.get("TLT", 0.0)
         
@@ -121,11 +131,13 @@ def portfolio_comparison(signals_df, spy_df, tlt_df, allocations) -> dict:
         "gr_calmar": abs(gr_cagr / gr_mdd) if gr_mdd != 0 else 0,
         "cagr_delta": (gr_cagr - bh_cagr) * 100,
         "mdd_delta": (abs(bh_mdd) - abs(gr_mdd)) * 100,
-        "sharpe_delta": gr_sharpe - bh_sharpe
+        "sharpe_delta": gr_sharpe - bh_sharpe,
+        "bh_ret": bh_ret,
+        "gr_ret": gr_ret
     }
 
 def kelly_criterion(hit_rate, avg_win, avg_loss) -> float:
-    if hit_rate <= 0 or avg_loss >= 0:
+    if hit_rate <= 0:
         return -1.0
     avg_win = abs(avg_win)
     avg_loss = abs(avg_loss)

@@ -23,7 +23,7 @@ def compute_signals(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
     df['vix_zscore'] = vix_zscore
     df['stress_score'] = vix_zscore
     
-    # Regime
+    # Regime (Strictly VIX level based)
     def get_regime(vix_val):
         if pd.isna(vix_val): return "CALM"
         if vix_val < 15: return "CALM"
@@ -33,36 +33,12 @@ def compute_signals(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
         
     df['regime'] = df['vix_close'].apply(get_regime)
     
-    # Actions
+    # Actions (Strictly z-score based, plus CRISIS override)
     df['action'] = "HOLD"
     df.loc[df['vix_zscore'] > config.VIX_ZSCORE_DEFENSIVE, 'action'] = "DEFENSIVE"
-    df.loc[df['vix_zscore'] < config.VIX_ZSCORE_AGGRESSIVE, 'action'] = "AGGRESSIVE"
     
     # Force DEFENSIVE if CRISIS regime
     df.loc[df['regime'] == "CRISIS", 'action'] = "DEFENSIVE"
-    
-    # The portfolio_comparison only respects the regime string implicitly!
-    # "If regime == CRISIS: force DEFENSIVE ... use CRISIS allocation"
-    # "If action == DEFENSIVE OR regime == CRISIS: use CRISIS allocation"
-    # "If regime == ELEVATED AND action != AGGRESSIVE: use ELEVATED allocation"
-    # "Otherwise: use CALM/NORMAL allocation (100% SPY)"
-    #
-    # Wait, backtest.py metrics.py `portfolio_comparison` dynamically looks up `regime` and maps 
-    # to config.PORTFOLIO_ALLOCATIONS. To ensure `portfolio_comparison` simulates this 
-    # natively without us rewriting metrics.py or backtest.py for default runs, 
-    # we should internally align `df['regime']` string backwards so `portfolio_comparison` yields the right weights!
-    # Wait! The prompt says: "Combined: If action == 'DEFENSIVE' OR regime == 'CRISIS': use CRISIS allocation", etc. 
-    # I can just re-map the `regime` column because that's what `portfolio_comparison` reads!
-    # Or, does backtest.py need me to just map `regime`? Yes, `portfolio_comparison` reads `signals_df.set_index('date')['regime']`.
-    # I will create a `mapped_regime` and overwrite `regime` with it for backtest compatibility, OR just overwrite `regime`.
-    # Let me follow rules exactly. The new `regime` should just direct `portfolio_comparison`.
-    
-    original_regime = df['regime'].copy()
-    
-    # Re-map regimes corresponding to resulting allocations so metrics.py calculates natively:
-    df.loc[(df['action'] == "DEFENSIVE") | (original_regime == "CRISIS"), 'regime'] = "CRISIS"
-    df.loc[(original_regime == "ELEVATED") & (df['action'] != "AGGRESSIVE") & (df['regime'] != "CRISIS"), 'regime'] = "ELEVATED"
-    df.loc[~df['regime'].isin(["CRISIS", "ELEVATED"]), 'regime'] = "CALM"
     
     df.reset_index(inplace=True)
     if 'Date' in df.columns:
@@ -128,4 +104,5 @@ if __name__ == "__main__":
     data = fetch_all()
     signals = compute_signals(data)
     print(signals.head())
-    print("Action counts:\\n", signals['action'].value_counts())
+    print("Action counts:\n", signals['action'].value_counts())
+    print("Regime counts:\n", signals['regime'].value_counts())

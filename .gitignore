@@ -5,3 +5,4 @@ data/cache/
 results/
 venv/
 georisk-env/
+.georisk_env
