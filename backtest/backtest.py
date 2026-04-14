@@ -306,13 +306,58 @@ def run_breakdown(periods):
             
         print(f"\nBest signal: {best_name}\n")
 
+def run_walkforward():
+    print("GeoRisk Walk-Forward Validation")
+    print("═══════════════════════════════════════════════════════")
+    data = fetch_all("10y")
+    if "SPY" not in data or "TLT" not in data:
+        print("10y data not fully available. Trying 7y...")
+        data = fetch_all("7y")
+        
+    signals = compute_signals(data)
+    spy_df = data["SPY"]
+    tlt_df = data["TLT"]
+    gld_df = data.get("GLD")
+    sgov_df = data.get("SGOV")
+
+    windows = [
+        ("In-sample", "2016-01-01", "2021-12-31"),
+        ("Out-of-sample", "2022-01-01", "2026-04-01")
+    ]
+
+    for name, start, end in windows:
+        s_spy = spy_df[(spy_df.index >= start) & (spy_df.index <= end)]
+        if s_spy.empty:
+            print(f"\n{name}: No data available for this range.")
+            continue
+            
+        s_tlt = tlt_df.reindex(s_spy.index).ffill()
+        s_gld = gld_df.reindex(s_spy.index).ffill() if gld_df is not None else None
+        s_sgov = sgov_df.reindex(s_spy.index).ffill() if sgov_df is not None else None
+        
+        # signals['date'] is the column to slice on
+        s_signals = signals[(signals['date'] >= start) & (signals['date'] <= end)]
+        
+        actual_start = s_spy.index[0].strftime("%Y-%m-%d")
+        actual_end = s_spy.index[-1].strftime("%Y-%m-%d")
+        
+        port = portfolio_comparison(s_signals, s_spy, s_tlt, config.PORTFOLIO_ALLOCATIONS, method="fixed", gld_df=s_gld, sgov_df=s_sgov)
+        
+        print(f"\n{name} ({actual_start} → {actual_end})")
+        print(f"  CAGR:   {port['gr_cagr']:.1f}%")
+        print(f"  MDD:    {port['gr_mdd']:.1f}%")
+        print(f"  Sharpe: {port['gr_sharpe']:.2f}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--period", nargs="+", default=["3y"])
     parser.add_argument("--breakdown", action="store_true")
+    parser.add_argument("--walkforward", action="store_true")
     args = parser.parse_args()
     
-    if args.breakdown:
+    if args.walkforward:
+        run_walkforward()
+    elif args.breakdown:
         run_breakdown(args.period)
     else:
         run_backtest(args.period)
