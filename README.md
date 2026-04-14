@@ -203,10 +203,4 @@ python publish.py --paper
 
 ## 환경변수 (.georisk_env)
 
-```bash
-export TELEGRAM_BOT_TOKEN="..."
-export TELEGRAM_CHAT_ID="..."
-export CF_ACCOUNT_ID=""       # Cloudflare 계정 ID
-export CF_NAMESPACE_ID=""     # KV 네임스페이스 ID
-export CF_API_TOKEN=""        # KV 쓰기 권한 토큰
-```
+
