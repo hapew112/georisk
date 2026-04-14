@@ -1,92 +1,118 @@
-"""
-signals.py
-일별 composite stress_score 계산.
-"""
-
 import pandas as pd
+import numpy as np
+import config
 
 
-def label_stress(score: int) -> str:
-    if score == 0:
-        return "CALM"
-    elif score == 1:
-        return "NORMAL"
-    elif score == 2:
-        return "ELEVATED"
-    else:
-        return "HIGH_STRESS"
+def kalman_smooth(series: pd.Series, process_noise: float = 0.05, obs_noise: float = 1.0) -> pd.Series:
+    """1D Kalman filter — smooths noisy signal while tracking real changes."""
+    values = series.values.astype(float)
+    n = len(values)
+    smoothed = np.empty(n)
+
+    x = values[~np.isnan(values)][0] if not np.all(np.isnan(values)) else 0.0
+    p = 1.0
+
+    for i, obs in enumerate(values):
+        p += process_noise
+        if np.isnan(obs):
+            smoothed[i] = x
+            continue
+        k = p / (p + obs_noise)
+        x = x + k * (obs - x)
+        p = (1 - k) * p
+        smoothed[i] = x
+
+    return pd.Series(smoothed, index=series.index)
 
 
-def compute_signals(data: dict) -> pd.DataFrame:
-    """
-    각 심볼 데이터로부터 일별 stress_score를 계산한다.
+def get_regime(vix_val) -> str:
+    if pd.isna(vix_val): return "CALM"
+    if vix_val < 15: return "CALM"
+    if vix_val < 20: return "NORMAL"
+    if vix_val < 28: return "ELEVATED"
+    return "CRISIS"
 
-    스트레스 조건:
-      1. VIX  일변화율 > +15%
-      2. DXY  일변화율 > +0.8%
-      3. WTI  일변화율 > +5%
-      4. TNX  절대 변화  > +0.08 (이미 %포인트 단위)
-      5. Gold 일변화율 > +2%
 
-    반환 DataFrame 컬럼:
-      date, vix_spike, dollar_surge, oil_spike, yield_jump, gold_rush,
-      stress_score (0-5), stress_label
-    """
-    spy = data.get("SPY")
-    if spy is None:
-        raise ValueError("SPY data is required to build the signal index")
+def compute_signals(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    if "SPY" not in data or "^VIX" not in data:
+        return pd.DataFrame()
 
-    # SPY 거래일 기준 인덱스
-    idx = spy.index
+    df = pd.DataFrame(index=data["SPY"].index)
+    df['spy_close'] = data["SPY"]['Close']
+    df['vix_close'] = data["^VIX"]['Close']
 
-    def close_series(symbol: str) -> pd.Series:
-        df = data.get(symbol)
-        if df is None or df.empty:
-            return pd.Series(dtype=float)
-        s = df["Close"].reindex(idx).ffill()
-        return s
+    vix = kalman_smooth(df['vix_close'])
+    vix_sma20 = vix.rolling(window=config.VIX_SMA_PERIOD).mean()
+    vix_std20 = vix.rolling(window=config.VIX_SMA_PERIOD).std()
+    vix_zscore = (vix - vix_sma20) / vix_std20.replace(0, np.nan)
 
-    vix   = close_series("^VIX")
-    dxy   = close_series("DX-Y.NYB")
-    wti   = close_series("CL=F")
-    tnx   = close_series("^TNX")
-    gold  = close_series("GC=F")
+    df['vix_sma20'] = vix_sma20
+    df['vix_std20'] = vix_std20
+    df['vix_zscore'] = vix_zscore
+    df['stress_score'] = vix_zscore
+    df['regime'] = df['vix_close'].apply(get_regime)
 
-    # 일변화
-    vix_chg  = vix.pct_change()
-    dxy_chg  = dxy.pct_change()
-    wti_chg  = wti.pct_change()
-    tnx_diff = tnx.diff()          # 절대 변화 (단위: %포인트)
-    gold_chg = gold.pct_change()
+    df['action'] = "HOLD"
+    df.loc[df['vix_zscore'] > config.VIX_ZSCORE_DEFENSIVE, 'action'] = "DEFENSIVE"
+    df.loc[df['regime'] == "CRISIS", 'action'] = "DEFENSIVE"
 
-    # 스트레스 조건 (Boolean)
-    vix_spike    = vix_chg  > 0.15
-    dollar_surge = dxy_chg  > 0.008
-    oil_spike    = wti_chg  > 0.05
-    yield_jump   = tnx_diff > 0.08
-    gold_rush    = gold_chg > 0.02
+    df.reset_index(inplace=True)
+    if 'Date' in df.columns:
+        df.rename(columns={'Date': 'date'}, inplace=True)
 
-    stress_score = (
-        vix_spike.astype(int)
-        + dollar_surge.astype(int)
-        + oil_spike.astype(int)
-        + yield_jump.astype(int)
-        + gold_rush.astype(int)
-    )
+    return df
 
-    result = pd.DataFrame({
-        "date":         idx,
-        "vix_spike":    vix_spike,
-        "dollar_surge": dollar_surge,
-        "oil_spike":    oil_spike,
-        "yield_jump":   yield_jump,
-        "gold_rush":    gold_rush,
-        "stress_score": stress_score,
-    })
-    result["stress_label"] = result["stress_score"].apply(label_stress)
-    result = result.set_index("date")
 
-    # 첫 행은 pct_change로 NaN → 제거
-    result = result.dropna(subset=["stress_score"])
+def compute_signals_legacy(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    if "SPY" not in data or "^VIX" not in data:
+        return pd.DataFrame()
 
-    return result
+    df = pd.DataFrame(index=data["SPY"].index)
+    df['spy_close'] = data["SPY"]['Close']
+    df['vix_close'] = data["^VIX"]['Close']
+
+    def safe_pct_change(symbol):
+        if symbol in data:
+            return data[symbol]['Close'].pct_change()
+        return pd.Series(0, index=df.index)
+
+    vix_pct = safe_pct_change("^VIX")
+    dollar_pct = safe_pct_change("DX-Y.NYB")
+    oil_pct = safe_pct_change("CL=F")
+    yield_pct = safe_pct_change("^TNX")
+    gold_pct = safe_pct_change("GC=F")
+
+    df['vix_spike'] = vix_pct > config.STRESS_THRESHOLDS["vix_spike"] / 100
+    df['dollar_surge'] = dollar_pct > config.STRESS_THRESHOLDS["dollar_surge"] / 100
+    df['oil_spike'] = oil_pct > config.STRESS_THRESHOLDS["oil_spike"] / 100
+    df['yield_jump'] = yield_pct > config.STRESS_THRESHOLDS["yield_jump"] / 100
+    df['gold_rush'] = gold_pct > config.STRESS_THRESHOLDS["gold_rush"] / 100
+
+    df['stress_score'] = df[['vix_spike', 'dollar_surge', 'oil_spike', 'yield_jump', 'gold_rush']].sum(axis=1)
+    df['regime'] = df['vix_close'].apply(get_regime)
+
+    def get_action(row):
+        score = row['stress_score']
+        reg = row['regime']
+        if score >= config.SIGNAL_MIN_STRESS:
+            return "DEFENSIVE"
+        if reg == "CRISIS":
+            return "DEFENSIVE"
+        if score >= config.SIGNAL_MIN_STRESS - 1 and reg in ["ELEVATED", "CRISIS"]:
+            return "DEFENSIVE"
+        return "HOLD"
+
+    df['action'] = df.apply(get_action, axis=1)
+    df.reset_index(inplace=True)
+    if 'Date' in df.columns:
+        df.rename(columns={'Date': 'date'}, inplace=True)
+    return df
+
+
+if __name__ == "__main__":
+    from data_fetcher import fetch_all
+    data = fetch_all()
+    signals = compute_signals(data)
+    print(signals.head())
+    print("Action counts:\n", signals['action'].value_counts())
+    print("Regime counts:\n", signals['regime'].value_counts())

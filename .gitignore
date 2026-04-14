@@ -3,3 +3,6 @@ __pycache__/
 *.pyo
 data/cache/
 results/
+venv/
+georisk-env/
+.georisk_env
