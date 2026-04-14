@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import config
+from allocation import get_allocation
 
 def signal_quality(signals_df: pd.DataFrame, spy_df: pd.DataFrame) -> dict:
     total_signals = 0
@@ -67,7 +68,7 @@ def signal_quality(signals_df: pd.DataFrame, spy_df: pd.DataFrame) -> dict:
     
     return res
 
-def portfolio_comparison(signals_df, spy_df, tlt_df, allocations) -> dict:
+def portfolio_comparison(signals_df, spy_df, tlt_df, allocations, method="rp", gld_df=None, sgov_df=None) -> dict:
     if "Close" not in tlt_df:
         tlt_df = pd.DataFrame(index=spy_df.index)
         tlt_df['Close'] = spy_df['Close'] * 0
@@ -75,6 +76,8 @@ def portfolio_comparison(signals_df, spy_df, tlt_df, allocations) -> dict:
     df = pd.DataFrame(index=spy_df.index)
     df['spy_ret'] = spy_df['Close'].pct_change()
     df['tlt_ret'] = tlt_df['Close'].pct_change().reindex(df.index, fill_value=0)
+    df['gld_ret'] = gld_df['Close'].pct_change().reindex(df.index, fill_value=0) if gld_df is not None else 0
+    df['sgov_ret'] = sgov_df['Close'].pct_change().reindex(df.index, fill_value=0) if sgov_df is not None else 0
     
     bh_ret = df['spy_ret']
     
@@ -93,18 +96,36 @@ def portfolio_comparison(signals_df, spy_df, tlt_df, allocations) -> dict:
         # Otherwise use the market regime allocation
         alloc_regime = "CRISIS" if action == "DEFENSIVE" else regime
         
-        alloc = allocations.get(alloc_regime, allocations["CALM"])
-        w_spy = alloc.get("SPY", 1.0)
-        w_tlt = alloc.get("TLT", 0.0)
-        
-        row_idx = df.index.get_loc(date)
-        if isinstance(row_idx, slice):
+        idx = df.index.get_loc(date)
+        if isinstance(idx, slice):
             continue
-        spy_c = df.iloc[row_idx]['spy_ret']
-        if pd.isna(spy_c): spy_c = 0
-        tlt_c = df.iloc[row_idx]['tlt_ret']
-        if pd.isna(tlt_c): tlt_c = 0
-        gr_ret.iloc[row_idx] = w_spy * spy_c + w_tlt * tlt_c
+            
+        if method == "fixed":
+            # Use fixed weights from config (v7)
+            fixed = allocations.get(alloc_regime, {"SPY": 1.0, "TLT": 0.0, "cash": 0.0})
+            w_spy, w_tlt, w_gld, w_sgov = fixed.get("SPY", 1.0), fixed.get("TLT", 0.0), fixed.get("GLD", 0.0), fixed.get("SGOV", 0.0)
+        else:
+            # Use dynamic Hybrid Risk Parity (v8)
+            spy_prices = spy_df['Close'].iloc[:idx+1]
+            tlt_prices = tlt_df['Close'].iloc[:idx+1]
+            gld_prices = gld_df['Close'].iloc[:idx+1] if gld_df is not None else None
+            alloc = get_allocation(spy_prices, tlt_prices, alloc_regime, config, gld_prices=gld_prices)
+            w_spy = alloc.get("SPY", 1.0)
+            w_tlt = alloc.get("TLT", 0.0)
+            w_gld = alloc.get("GLD", 0.0)
+            w_sgov = alloc.get("SGOV", 0.0)
+            
+        spy_c = df.iloc[idx]['spy_ret']
+        tlt_c = df.iloc[idx]['tlt_ret']
+        gld_c = df.iloc[idx]['gld_ret']
+        sgov_c = df.iloc[idx]['sgov_ret']
+        
+        gr_ret.iloc[idx] = (
+            w_spy * (spy_c if not pd.isna(spy_c) else 0) +
+            w_tlt * (tlt_c if not pd.isna(tlt_c) else 0) +
+            w_gld * (gld_c if not pd.isna(gld_c) else 0) +
+            w_sgov * (sgov_c if not pd.isna(sgov_c) else 0)
+        )
         
     bh_eq = (1 + bh_ret.fillna(0)).cumprod()
     gr_eq = (1 + gr_ret.fillna(0)).cumprod()

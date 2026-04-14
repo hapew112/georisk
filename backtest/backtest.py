@@ -23,9 +23,18 @@ def run_backtest(periods):
             
         spy_df = data["SPY"]
         tlt_df = data["TLT"]
+        gld_df = data.get("GLD")
+        sgov_df = data.get("SGOV")
         
         quality = signal_quality(signals, spy_df)
-        portfolio = portfolio_comparison(signals, spy_df, tlt_df, config.PORTFOLIO_ALLOCATIONS)
+        
+        # Calculate v7: Fixed Allocations (PORTFOLIO_ALLOCATIONS has correct SPY/TLT/cash keys)
+        port_v7 = portfolio_comparison(signals, spy_df, tlt_df, config.PORTFOLIO_ALLOCATIONS, method="fixed", gld_df=gld_df, sgov_df=sgov_df)
+        # Calculate v8: Hybrid Risk Parity
+        port_v8 = portfolio_comparison(signals, spy_df, tlt_df, config.HYBRID_CAPS, method="rp", gld_df=gld_df, sgov_df=sgov_df)
+        
+        # Use v8 as the primary for the main report
+        portfolio = port_v8
         
         gr_r = portfolio.get("gr_ret")
         bh_r = portfolio.get("bh_ret")
@@ -112,6 +121,11 @@ Portfolio Comparison ({period})
   GeoRisk:       CAGR {portfolio['gr_cagr']:.1f}%, Sharpe {portfolio['gr_sharpe']:.2f}, MDD {portfolio['gr_mdd']:.1f}%
   MDD delta:     {portfolio['mdd_delta']:.1f}% (improvement)
   Sharpe delta:  {portfolio['sharpe_delta']:.2f}
+
+V7 (Fixed) vs V8 (Risk Parity) Comparison
+  Method         CAGR      MDD       Sharpe
+  v7 Fixed       {port_v7['gr_cagr']:>4.1f}%     {port_v7['gr_mdd']:>5.1f}%     {port_v7['gr_sharpe']:.2f}
+  v8 RP          {port_v8['gr_cagr']:>4.1f}%     {port_v8['gr_mdd']:>5.1f}%     {port_v8['gr_sharpe']:.2f}
 
 Kelly Criterion (Portfolio basis)
   Hit Rate: {hit_rate*100:.1f}%, Avg Win: {avg_win*100:.4f}%, Avg Loss: {abs(avg_loss)*100:.4f}%
