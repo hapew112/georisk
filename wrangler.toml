@@ -1,0 +1,9 @@
+name = "georisk-proxy"
+main = "worker.js"
+compatibility_date = "2026-04-27"
+
+# FINNHUB_KEY, CF_RADAR_KEY 는 Cloudflare 대시보드 Workers → Settings → Variables 에서 설정
+# KV namespace는 대시보드에서 ID 확인 후 아래 주석 해제
+# [[kv_namespaces]]
+# binding = "GEORISK_REGIME"
+# id = "여기에_KV_namespace_ID_입력"
