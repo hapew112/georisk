@@ -232,8 +232,41 @@ export default {
             'GET /api/oref',
             'GET /api/rss?url=RSS_URL',
             'GET /api/news?category=global|korea|macro|cyber|latest',
+            'GET /api/regime',
           ],
         });
+      }
+
+      if (path === '/api/paper') {
+        try {
+          const raw = env.GEORISK_REGIME ? await env.GEORISK_REGIME.get('paper_summary') : null;
+          if (!raw) {
+            return json({ error: 'No paper data yet', trading_days: 0 });
+          }
+          return new Response(raw, {
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        } catch(e) {
+          return err('Paper data failed: ' + e.message, 500);
+        }
+      }
+
+      if (path === '/api/regime') {
+        try {
+          const raw = env.GEORISK_REGIME ? await env.GEORISK_REGIME.get('latest_regime') : null;
+          if (!raw) {
+            return new Response(JSON.stringify({
+              regime: 'NORMAL', composite_score: 2,
+              spy_weight: 0.80, tlt_weight: 0.15, cash_weight: 0.05,
+              last_updated: null, source: 'fallback'
+            }), { headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+          }
+          return new Response(raw, {
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        } catch(e) {
+          return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+        }
       }
 
       if (path === '/api/quote') {

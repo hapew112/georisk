@@ -1,333 +1,363 @@
-"""
-backtest.py
-GeoRisk 멀티팩터 레짐 백테스트 엔진 — CLI 진입점.
-
-매일 5개 매크로/기술적 팩터를 종합하여 시장 레짐을 결정하고,
-레짐에 따라 SPY/TLT/Cash 비율을 조정하는 포트폴리오를 시뮬레이션한다.
-
-사용법:
-    python backtest.py                        # 기본 max (20년+)
-    python backtest.py --period 10y           # 10년
-    python backtest.py --initial 50000        # 초기 자본 5만 달러
-    python backtest.py --extra AAPL MSFT      # 추가 심볼 모니터링
-"""
-
 import argparse
-import json
-import math
 import sys
-from datetime import date
-from pathlib import Path
-
-import pandas as pd
-import numpy as np
-
+import json
+import os
+import math
+from datetime import datetime
 from data_fetcher import fetch_all
-from signals import compute_regimes, REGIME_NAMES
-from metrics import compute_portfolio_metrics, equity_curve_from_returns
+from signals import compute_signals
+from metrics import signal_quality, portfolio_comparison, kelly_criterion
+import config
 
-
-RESULTS_DIR = Path(__file__).parent.parent / "results"
-
-
-# ═══════════════════════════════════════════════════════════════
-# 포트폴리오 시뮬레이션 엔진
-# ═══════════════════════════════════════════════════════════════
-
-def simulate_portfolio(data: dict, regimes_df: pd.DataFrame,
-                       initial: float = 10000.0) -> dict:
-    """
-    일별 레짐 기반 포트폴리오를 시뮬레이션한다.
-
-    Returns
-    -------
-    dict with:
-        benchmark_equity : pd.Series  (SPY 100% B&H)
-        strategy_equity  : pd.Series  (GeoRisk 레짐 전략)
-        daily_log        : pd.DataFrame (일별 상세 기록)
-    """
-    spy_close = data["SPY"]["Close"]
-    tlt_close = data.get("TLT", pd.DataFrame()).get("Close")
-
-    # 레짐 df와 SPY의 공통 인덱스만 사용
-    common_idx = regimes_df.index.intersection(spy_close.index)
-    if tlt_close is not None:
-        common_idx = common_idx.intersection(tlt_close.index)
-    common_idx = common_idx.sort_values()
-
-    if len(common_idx) < 2:
-        raise ValueError("Insufficient overlapping data between SPY, TLT, and regime dates")
-
-    spy = spy_close.reindex(common_idx)
-    tlt = tlt_close.reindex(common_idx) if tlt_close is not None else pd.Series(0.0, index=common_idx)
-    regimes = regimes_df.reindex(common_idx)
-
-    # 일수익률
-    spy_ret = spy.pct_change().fillna(0)
-    tlt_ret = tlt.pct_change().fillna(0)
-
-    # 벤치마크: SPY 100% Buy & Hold
-    benchmark = initial * (1 + spy_ret).cumprod()
-
-    # 전략: 레짐별 가중치로 일별 포트폴리오 수익률
-    strategy_values = [initial]
-    daily_records = []
-
-    for i in range(1, len(common_idx)):
-        dt = common_idx[i]
-        prev_dt = common_idx[i - 1]
-
-        # 전일 레짐 기반으로 오늘 배분 결정 (look-ahead bias 방지)
-        row = regimes.loc[prev_dt] if prev_dt in regimes.index else None
-        if row is None:
-            spy_w, tlt_w, cash_w = 1.0, 0.0, 0.0
-            regime = "NORMAL"
+def run_backtest(periods):
+    for period in periods:
+        data = fetch_all(period)
+        if "SPY" not in data or "TLT" not in data:
+            print("Missing core symbols. Skipping.")
+            continue
+            
+        signals = compute_signals(data)
+        if signals.empty:
+            print("Failed to compute signals.")
+            continue
+            
+        spy_df = data["SPY"]
+        tlt_df = data["TLT"]
+        gld_df = data.get("GLD")
+        sgov_df = data.get("SGOV")
+        
+        quality = signal_quality(signals, spy_df)
+        
+        # Calculate v7: Fixed Allocations (PORTFOLIO_ALLOCATIONS has correct SPY/TLT/cash keys)
+        port_v7 = portfolio_comparison(signals, spy_df, tlt_df, config.PORTFOLIO_ALLOCATIONS, method="fixed", gld_df=gld_df, sgov_df=sgov_df)
+        # Calculate v8: Hybrid Risk Parity
+        port_v8 = portfolio_comparison(signals, spy_df, tlt_df, config.HYBRID_CAPS, method="rp", gld_df=gld_df, sgov_df=sgov_df)
+        
+        # Use v8 as the primary for the main report
+        portfolio = port_v8
+        
+        gr_r = portfolio.get("gr_ret")
+        bh_r = portfolio.get("bh_ret")
+        active = gr_r != bh_r
+        
+        if active.sum() > 0:
+            edge_ret = gr_r[active] - bh_r[active]
+            wins = edge_ret[edge_ret > 0]
+            losses = edge_ret[edge_ret <= 0]
+            avg_win = wins.mean() if len(wins) > 0 else 0
+            avg_loss = losses.mean() if len(losses) > 0 else 0
+            hit_rate = len(wins) / len(edge_ret)
         else:
-            spy_w  = row["spy_weight"]
-            tlt_w  = row["tlt_weight"]
-            cash_w = row["cash_weight"]
-            regime = row["regime"]
+            avg_win = 0; avg_loss = 0; hit_rate = 0
 
-        # 오늘의 수익률
-        r_spy = spy_ret.iloc[i]
-        r_tlt = tlt_ret.iloc[i]
+        kelly_f = kelly_criterion(hit_rate, avg_win, abs(avg_loss))
+        kelly_pct = kelly_f * 100 if kelly_f > 0 else 0
+        
+        worst_case_date = "N/A"
+        worst_dd = 0
+        for s in quality["individual_signals"]:
+            if "dd_5d" in s and s["dd_5d"] < worst_dd:
+                worst_dd = s["dd_5d"]
+                worst_case_date = s["date"]
+                
+        calm_days = signals[signals['regime'] == "CALM"]
+        norm_days = signals[signals['regime'] == "NORMAL"]
+        elev_days = signals[signals['regime'] == "ELEVATED"]
+        cris_days = signals[signals['regime'] == "CRISIS"]
+        
+        def regime_ret(days_df):
+            if len(days_df) == 0: return 0.0
+            rets = []
+            spy_closes = spy_df['Close'].tolist()
+            spy_dates = spy_df.index
+            for d in days_df['date']:
+                try:
+                    idx = spy_dates.get_loc(d)
+                    if idx + 3 < len(spy_closes):
+                        rets.append((spy_closes[idx+3] / spy_closes[idx]) - 1)
+                except KeyError:
+                    pass
+            return sum(rets)/len(rets)*100 if rets else 0.0
 
-        port_ret = spy_w * r_spy + tlt_w * r_tlt + cash_w * 0.0
-        new_val = strategy_values[-1] * (1 + port_ret)
-        strategy_values.append(new_val)
+        n_calm = len(calm_days)
+        n_norm = len(norm_days)
+        n_elev = len(elev_days)
+        n_cris = len(cris_days)
+        
+        calm_ret = regime_ret(calm_days)
+        norm_ret = regime_ret(norm_days)
+        elev_ret = regime_ret(elev_days)
+        cris_ret = regime_ret(cris_days)
+        
+        start_date = data["SPY"].index[0].strftime("%Y-%m-%d")
+        end_date = data["SPY"].index[-1].strftime("%Y-%m-%d")
+        
+        hit_rate_3d = quality.get("hit_rate_3d", 0) * 100
+        hit_rate_5d = quality.get("hit_rate_5d", 0) * 100
+        n_hits_3d = int(quality["total_signals"] * quality.get("hit_rate_3d", 0))
+        
+        report = f"""
+GeoRisk Stress Backtest ({start_date} → {end_date}, {period})
+═══════════════════════════════════════════════════════
 
-        daily_records.append({
-            "date": dt,
-            "regime": regime,
-            "spy_weight": spy_w,
-            "tlt_weight": tlt_w,
-            "cash_weight": cash_w,
-            "spy_return": round(r_spy * 100, 4),
-            "tlt_return": round(r_tlt * 100, 4),
-            "portfolio_return": round(port_ret * 100, 4),
-            "benchmark_value": round(benchmark.iloc[i], 2),
-            "strategy_value": round(new_val, 2),
-        })
+Signal Summary (stress>={config.SIGNAL_MIN_STRESS} OR regime>={config.SIGNAL_MIN_REGIME})
+  Signals fired:    {quality['total_signals']} times
+  Hit rate (3d):    {hit_rate_3d:.1f}%  ({n_hits_3d}/{quality['total_signals']} → SPY dropped)
+  Hit rate (5d):    {hit_rate_5d:.1f}%
+  Avg return 3d:    {quality.get('avg_return_3d', 0):.2f}%  (baseline: {quality.get('baseline_avg_3d', 0):.2f}%)
+  Avg drawdown 5d:  {quality.get('avg_drawdown_5d', 0):.2f}%
+  Worst case:       {quality.get('worst_case_5d', 0):.2f}%  ({worst_case_date})
+  False alarms:     {quality.get('false_alarm_rate', 0)*100:.1f}%
+  Edge vs baseline: {quality.get('edge', 0):.2f}%
 
-    strategy_equity = pd.Series(strategy_values, index=common_idx)
+VIX Regime Breakdown
+  CALM (VIX<15):     {n_calm} days, avg 3d ret: {calm_ret:.2f}%
+  NORMAL (15-20):    {n_norm} days, avg 3d ret: {norm_ret:.2f}%
+  ELEVATED (20-28):  {n_elev} days, avg 3d ret: {elev_ret:.2f}%
+  CRISIS (28+):      {n_cris} days, avg 3d ret: {cris_ret:.2f}%
 
-    return {
-        "benchmark_equity": benchmark,
-        "strategy_equity": strategy_equity,
-        "daily_log": pd.DataFrame(daily_records),
-    }
+Portfolio Comparison ({period})
+  Buy & Hold:    CAGR {portfolio['bh_cagr']:.1f}%, Sharpe {portfolio['bh_sharpe']:.2f}, MDD {portfolio['bh_mdd']:.1f}%
+  GeoRisk:       CAGR {portfolio['gr_cagr']:.1f}%, Sharpe {portfolio['gr_sharpe']:.2f}, MDD {portfolio['gr_mdd']:.1f}%
+  MDD delta:     {portfolio['mdd_delta']:.1f}% (improvement)
+  Sharpe delta:  {portfolio['sharpe_delta']:.2f}
 
+V7 (Fixed) vs V8 (Risk Parity) Comparison
+  Method         CAGR      MDD       Sharpe
+  v7 Fixed       {port_v7['gr_cagr']:>4.1f}%     {port_v7['gr_mdd']:>5.1f}%     {port_v7['gr_sharpe']:.2f}
+  v8 RP          {port_v8['gr_cagr']:>4.1f}%     {port_v8['gr_mdd']:>5.1f}%     {port_v8['gr_sharpe']:.2f}
 
-# ═══════════════════════════════════════════════════════════════
-# 결과 출력 및 저장
-# ═══════════════════════════════════════════════════════════════
+Kelly Criterion (Portfolio basis)
+  Hit Rate: {hit_rate*100:.1f}%, Avg Win: {avg_win*100:.4f}%, Avg Loss: {abs(avg_loss)*100:.4f}%
+  kelly_f: {kelly_f:.3f} → recommended max position: {kelly_pct:.1f}%
+"""
+        print(report.strip())
+        print()
+        
+        today = datetime.now().strftime("%Y-%m-%d")
+        os.makedirs(config.RESULTS_DIR, exist_ok=True)
+        json_path = os.path.join(config.RESULTS_DIR, f"{today}_{period}_backtest.json")
+        
+        def sanitize(obj):
+            if isinstance(obj, float) and math.isnan(obj): return None
+            return obj
+            
+        out_data = {
+            "period": period,
+            "start_date": start_date,
+            "end_date": end_date,
+            "quality": {k: sanitize(v) for k, v in quality.items()},
+            "portfolio": {k: sanitize(v) for k, v in portfolio.items() if k not in ["bh_ret", "gr_ret"]},
+            "kelly": sanitize(kelly_f),
+            "regimes": {
+                "calm": {"days": n_calm, "ret": sanitize(calm_ret)},
+                "normal": {"days": n_norm, "ret": sanitize(norm_ret)},
+                "elevated": {"days": n_elev, "ret": sanitize(elev_ret)},
+                "crisis": {"days": n_cris, "ret": sanitize(cris_ret)}
+            }
+        }
+        with open(json_path, "w") as f:
+            json.dump(out_data, f, indent=2)
 
-def _json_safe(obj):
-    """numpy/pandas 타입을 JSON 직렬화 가능한 Python 기본 타입으로 변환."""
-    if isinstance(obj, dict):
-        return {k: _json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_json_safe(v) for v in obj]
-    if hasattr(obj, "item"):
-        return obj.item()
-    if isinstance(obj, float) and math.isnan(obj):
-        return None
-    return obj
+def run_breakdown(periods):
+    for period in periods:
+        data = fetch_all(period)
+        if "SPY" not in data or "TLT" not in data: continue
+        signals = compute_signals(data)
+        spy_df, tlt_df = data["SPY"], data["TLT"]
+        
+        print(f"Breakdown Analysis for {period}\n")
+        
+        port_b = portfolio_comparison(signals, spy_df, tlt_df, config.PORTFOLIO_ALLOCATIONS)
+        signals_c = signals.copy()
+        mask_c = (signals_c['stress_score'] >= 2) & (signals_c['regime'].isin(["NORMAL", "ELEVATED", "CRISIS"]))
+        signals_c.loc[mask_c, 'regime'] = "CRISIS"
+        port_c = portfolio_comparison(signals_c, spy_df, tlt_df, config.PORTFOLIO_ALLOCATIONS)
+        
+        print("Portfolio Breakdown")
+        print("═══════════════════════════════════════")
+        print(f"            {'CAGR':<8}{'MDD':<9}{'Sharpe'}")
+        print(f"{'Buy&Hold':<12}{port_b['bh_cagr']:>4.1f}%   {port_b['bh_mdd']:>5.1f}%   {port_b['bh_sharpe']:.2f}")
+        print(f"{'Regime Only':<12}{port_b['gr_cagr']:>4.1f}%   {port_b['gr_mdd']:>5.1f}%   {port_b['gr_sharpe']:.2f}")
+        print(f"{'Regime+Str':<12}{port_c['gr_cagr']:>4.1f}%   {port_c['gr_mdd']:>5.1f}%   {port_c['gr_sharpe']:.2f}")
+        
+        adds_value = "YES" if abs(port_c['gr_mdd']) <= abs(port_b['gr_mdd']) - 1.0 else "NO"
+        print(f"\nStress signal adds value: {adds_value}\n")
+        
+        print("Threshold Breakdown")
+        print("═══════════════════════════════════════")
+        print(f"{'Score':<7}{'Signals':<9}{'HitRate3d':<11}{'AvgRet3d':<10}{'Edge'}")
+        
+        def get_thr_stats(mask):
+            if mask.sum() == 0: return 0, 0.0, 0.0, 0.0
+            temp_signals = signals.copy()
+            temp_signals['action'] = "HOLD"
+            temp_signals.loc[mask, 'action'] = "DEFENSIVE"
+            sq = signal_quality(temp_signals, spy_df)
+            return len(temp_signals[mask]), sq.get("hit_rate_3d",0)*100, sq.get("avg_return_3d",0), sq.get("edge",0)
 
+        for thr in [1, 2, 3, "4+"]:
+            mask = (signals['stress_score'] >= 4) if thr == "4+" else (signals['stress_score'] == thr)
+            n_sig, hr3, avg3, edge = get_thr_stats(mask)
+            print(f"{str(thr):<7}{n_sig:<9}{hr3:>4.1f}%      {avg3:>5.2f}%     {edge:>+5.2f}%")
+        print()
+        
+        print("Regime Breakdown")
+        print("═══════════════════════════════════════")
+        print(f"{'Regime':<11}{'Days':<7}{'AvgRet3d':<10}{'AvgRet5d':<10}{'MDD'}")
+        for state in ["CALM", "NORMAL", "ELEVATED", "CRISIS"]:
+            mask = signals['regime'] == state
+            n_days = mask.sum()
+            if n_days > 0:
+                temp_signals = signals.copy()
+                temp_signals['action'] = "HOLD"
+                temp_signals.loc[mask, 'action'] = "DEFENSIVE"
+                sq = signal_quality(temp_signals, spy_df)
+                avg3 = sq.get("avg_return_3d", 0)
+                avg5 = sq.get("avg_return_5d", 0)
+                mdd = sq.get("worst_case_5d", 0)
+            else:
+                avg3 = avg5 = mdd = 0
+            print(f"{state:<11}{n_days:<7}{avg3:>+5.2f}%     {avg5:>+5.2f}%     {mdd:>5.1f}%")
+        print()
+        
+        import pandas as pd
+        print("Recency Check")
+        print("═══════════════════════════════════════")
+        print(f"            {'CAGR':<8}{'MDD':<9}{'Sharpe'}")
+        
+        recent_date = spy_df.index[-1] - pd.DateOffset(years=1)
+        spy_rec = spy_df[spy_df.index >= recent_date]
+        if len(spy_rec) > 0:
+            rec_start_date_str = spy_rec.index[0].strftime("%Y-%m-%d")
+            sig_rec = signals[signals['date'] >= rec_start_date_str]
+            tlt_rec = tlt_df[tlt_df.index >= recent_date]
+            port_r = portfolio_comparison(sig_rec, spy_rec, tlt_rec, config.PORTFOLIO_ALLOCATIONS)
+            c3y = port_b['gr_cagr']
+            m3y = port_b['gr_mdd']
+            s3y = port_b['gr_sharpe']
+            cr = port_r['gr_cagr']
+            mr = port_r['gr_mdd']
+            sr = port_r['gr_sharpe']
+            
+            per_str = f"Full {period}"
+            print(f"{per_str:<12}{c3y:>4.1f}%   {m3y:>5.1f}%   {s3y:.2f}")
+            print(f"{'Recent 1y':<12}{cr:>4.1f}%   {mr:>5.1f}%   {sr:.2f}")
+            is_stable = "YES" if sr >= 0.8 * s3y else "NO"
+            print(f"\nRecent performance stable: {is_stable}\n")
+            
+        today = datetime.now().strftime("%Y-%m-%d")
+        jp = os.path.join(config.RESULTS_DIR, f"{today}_{period}_breakdown.json")
+        with open(jp, "w") as f:
+            json.dump({"period": period}, f)
+            
+        import alt_signals
+        print("Alternative Signal Comparison")
+        print("═══════════════════════════════════════════════════")
+        print(f"{' '*18}{'CAGR':<7}{'MDD':<8}{'Sharpe':<8}{'HitRate':<9}{'Kelly':<7}{'FalseAlarm'}")
+        
+        print(f"{'Regime Only':<18}{port_b['gr_cagr']:>4.1f}%   {port_b['gr_mdd']:>5.1f}%   {port_b['gr_sharpe']:<8.2f}{'N/A':<9}{'N/A':<7}{'N/A'}")
+        
+        def get_kelly(port, sq):
+            gr_r = port.get("gr_ret")
+            bh_r = port.get("bh_ret")
+            if gr_r is None or bh_r is None: return -1.0, 0.0, 0.0, 0.0
+            
+            active = gr_r != bh_r
+            if active.sum() == 0: return -1.0, 0.0, 0.0, sq.get("false_alarm_rate", 0)
+            
+            edge_ret = gr_r[active] - bh_r[active]
+            wins = edge_ret[edge_ret > 0]
+            losses = edge_ret[edge_ret <= 0]
+            
+            w = wins.mean() if len(wins) > 0 else 0
+            l = losses.mean() if len(losses) > 0 else 0
+            hr = len(wins) / len(edge_ret)
+            
+            k = kelly_criterion(hr, w, abs(l))
+            return k, hr, w, sq.get("false_alarm_rate",0)
+            
+        sq_curr = signal_quality(signals, spy_df)
+        curr_k, curr_hr, curr_w, curr_fa = get_kelly(port_c, sq_curr)
+        print(f"{'Current Stress':<18}{port_c['gr_cagr']:>4.1f}%   {port_c['gr_mdd']:>5.1f}%   {port_c['gr_sharpe']:<8.2f}{curr_hr*100:>4.1f}%    {curr_k:>5.2f}  {curr_fa*100:>4.1f}%")
+        
+        alts = {
+            "Alt A: VIX MR": alt_signals.alt_a_vix_meanreversion(data),
+            "Alt B: Cross-Ast": alt_signals.alt_b_cross_asset(data),
+            "Alt C: Yield+VIX": alt_signals.alt_c_yield_vix(data)
+        }
+        
+        best_name = "None"
+        best_sharpe = -999.0
+        
+        for name, alt_sig in alts.items():
+            sq_alt = signal_quality(alt_sig, spy_df)
+            port_alt = portfolio_comparison(alt_sig, spy_df, tlt_df, config.PORTFOLIO_ALLOCATIONS)
+            k, hr, w, fa = get_kelly(port_alt, sq_alt)
+            cagr = port_alt['gr_cagr']
+            mdd = port_alt['gr_mdd']
+            sharpe = port_alt['gr_sharpe']
+            
+            if sharpe > best_sharpe and k > 0:
+                best_sharpe = sharpe
+                best_name = name
+                
+            print(f"{name:<18}{cagr:>4.1f}%   {mdd:>5.1f}%   {sharpe:<8.2f}{hr*100:>4.1f}%    {k:>5.2f}  {fa*100:>4.1f}%")
+            
+        print(f"\nBest signal: {best_name}\n")
 
-def print_summary(metrics: dict, regimes_df: pd.DataFrame, period: str):
-    b = metrics["benchmark"]
-    s = metrics["strategy"]
-    c = metrics["comparison"]
+def run_walkforward():
+    print("GeoRisk Walk-Forward Validation")
+    print("═══════════════════════════════════════════════════════")
+    data = fetch_all("10y")
+    if "SPY" not in data or "TLT" not in data:
+        print("10y data not fully available. Trying 7y...")
+        data = fetch_all("7y")
+        
+    signals = compute_signals(data)
+    spy_df = data["SPY"]
+    tlt_df = data["TLT"]
+    gld_df = data.get("GLD")
+    sgov_df = data.get("SGOV")
 
-    def pct(v):
-        return f"{v*100:.1f}%" if v is not None else "N/A"
+    windows = [
+        ("In-sample", "2016-01-01", "2021-12-31"),
+        ("Out-of-sample", "2022-01-01", "2026-04-01")
+    ]
 
-    def pct2(v):
-        return f"{v:.1f}%" if v is not None else "N/A"
-
-    def ratio(v):
-        return f"{v:.2f}" if v is not None else "N/A"
-
-    # 데이터 기간 정보
-    start = regimes_df.index[0].strftime("%Y-%m-%d")
-    end = regimes_df.index[-1].strftime("%Y-%m-%d")
-    n_years = len(regimes_df) / 252
-
-    print(f"\n{'='*60}")
-    print(f"  GeoRisk 멀티팩터 레짐 백테스트")
-    print(f"  {start} → {end} ({n_years:.1f}년, {len(regimes_df)}거래일)")
-    print(f"{'='*60}")
-    print()
-    print(f"  {'지표':<20} {'SPY B&H':>12} {'GeoRisk':>12}")
-    print(f"  {'─'*20} {'─'*12} {'─'*12}")
-    print(f"  {'총 수익률':<20} {pct2(b['total_return_pct']):>12} {pct2(s['total_return_pct']):>12}")
-    print(f"  {'CAGR':<20} {pct(b['cagr']):>12} {pct(s['cagr']):>12}")
-    print(f"  {'MDD':<20} {pct(b['mdd']):>12} {pct(s['mdd']):>12}")
-    print(f"  {'연간 변동성':<20} {pct(b['annual_volatility']):>12} {pct(s['annual_volatility']):>12}")
-    print(f"  {'Sharpe':<20} {ratio(b['sharpe']):>12} {ratio(s['sharpe']):>12}")
-    print(f"  {'Calmar':<20} {ratio(b['calmar']):>12} {ratio(s['calmar']):>12}")
-    print(f"  {'Sortino':<20} {ratio(b['sortino']):>12} {ratio(s['sortino']):>12}")
-    print(f"  {'Win Rate':<20} {pct(b['win_rate']):>12} {pct(s['win_rate']):>12}")
-    print()
-    print(f"  ── 비교 ──")
-    print(f"  MDD 개선률     : {pct2(c['mdd_improvement_pct'])}")
-    print(f"  CAGR 차이      : {c['cagr_diff_pct']:+.2f}%p")
-    print(f"  Sharpe 차이    : {c['sharpe_diff']:+.2f}")
-    print(f"  변동성 감소율  : {pct2(c['volatility_reduction_pct'])}")
-    print()
-
-    # 레짐 분포
-    regime_counts = regimes_df["regime"].value_counts()
-    total = len(regimes_df)
-    print(f"  ── 레짐 분포 ──")
-    for r in REGIME_NAMES:
-        cnt = regime_counts.get(r, 0)
-        pct_r = cnt / total * 100
-        bar = "█" * int(pct_r / 2)
-        print(f"  {r:<12} {cnt:>5}일 ({pct_r:>5.1f}%)  {bar}")
-    print()
-
-    # 팩터별 평균
-    print(f"  ── 팩터 평균 점수 (0~3) ──")
-    for col in ["vix_score", "yield_curve_score", "dollar_score", "sma200_score", "oil_score"]:
-        label = col.replace("_score", "").replace("_", " ").title()
-        val = regimes_df[col].mean()
-        print(f"  {label:<18} {val:.2f}")
-    print(f"  {'Composite':<18} {regimes_df['composite_score'].mean():.2f} / 15")
-    print()
-
-    # 판정 (MDD 개선 + 리스크 조정 수익률 종합 판단)
-    mdd_imp = c["mdd_improvement_pct"] or 0
-    calmar_better = (s.get("calmar", 0) or 0) > (b.get("calmar", 0) or 0)
-    sharpe_better = (s.get("sharpe", 0) or 0) >= (b.get("sharpe", 0) or 0) - 0.1
-
-    if mdd_imp >= 50:
-        verdict = "✅ 목표 달성 — MDD 50%+ 개선"
-    elif mdd_imp >= 40 and calmar_better:
-        verdict = "✅ 목표 달성 — MDD 40%+ 개선 + Calmar 우위"
-    elif mdd_imp >= 30:
-        verdict = "⚠️ 부분 달성 — MDD 30%+ 개선 (목표: 50%)"
-    else:
-        verdict = "❌ 미달 — 전략 재검토 필요"
-    print(f"  판정: {verdict}")
-    print(f"{'='*60}\n")
-
-
-def build_result(metrics: dict, regimes_df: pd.DataFrame,
-                 sim: dict, period: str) -> dict:
-    """결과를 JSON 저장용 dict로 구성."""
-    regime_counts = regimes_df["regime"].value_counts().to_dict()
-    factor_means = {
-        col: round(regimes_df[col].mean(), 3)
-        for col in ["vix_score", "yield_curve_score", "dollar_score",
-                     "sma200_score", "oil_score", "composite_score"]
-    }
-
-    # 최근 30일 일별 기록만 JSON에 포함 (전체는 너무 큼)
-    recent_log = sim["daily_log"].tail(60).to_dict(orient="records")
-    for rec in recent_log:
-        if hasattr(rec["date"], "strftime"):
-            rec["date"] = rec["date"].strftime("%Y-%m-%d")
-
-    # 레짐 전환 이벤트 (레짐이 바뀐 날들)
-    regime_changes = []
-    prev_regime = None
-    for _, row in regimes_df.iterrows():
-        if row["regime"] != prev_regime:
-            regime_changes.append({
-                "date": row.name.strftime("%Y-%m-%d"),
-                "from": prev_regime,
-                "to": row["regime"],
-                "composite_score": int(row["composite_score"]),
-            })
-            prev_regime = row["regime"]
-
-    return _json_safe({
-        "run_date": str(date.today()),
-        "data_range": f"{regimes_df.index[0].date()} to {regimes_df.index[-1].date()}",
-        "period": period,
-        "trading_days": len(regimes_df),
-        "years": round(len(regimes_df) / 252, 1),
-        "metrics": metrics,
-        "regime_distribution": regime_counts,
-        "factor_averages": factor_means,
-        "regime_changes_count": len(regime_changes),
-        "regime_changes": regime_changes[-50:],   # 최근 50건
-        "recent_daily_log": recent_log,
-    })
-
-
-# ═══════════════════════════════════════════════════════════════
-# CLI 진입점
-# ═══════════════════════════════════════════════════════════════
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="GeoRisk Multi-Factor Regime Backtest Engine"
-    )
-    parser.add_argument(
-        "--period", default="max",
-        help="yfinance 데이터 기간: max, 20y, 10y, 5y, 3y, 2y, 1y (기본: max)"
-    )
-    parser.add_argument(
-        "--initial", type=float, default=10000.0,
-        help="초기 투자 금액 (기본: $10,000)"
-    )
-    parser.add_argument(
-        "--extra", nargs="*", default=[],
-        help="추가 모니터링 심볼 (예: AAPL MSFT)"
-    )
-    parser.add_argument(
-        "--output-dir", default=str(RESULTS_DIR),
-        help="결과 JSON 출력 디렉토리"
-    )
-    args = parser.parse_args()
-
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # ── 1. 데이터 다운로드 ──
-    print("=" * 60)
-    print("  GeoRisk 멀티팩터 레짐 백테스트 시작")
-    print("=" * 60)
-    print(f"\n[1/4] 시장 데이터 다운로드 (period={args.period}) ...")
-    data = fetch_all(period=args.period, extra_symbols=args.extra)
-
-    if "SPY" not in data:
-        print("ERROR: SPY 데이터를 가져올 수 없습니다.", file=sys.stderr)
-        sys.exit(1)
-
-    spy_len = len(data["SPY"])
-    print(f"       SPY: {spy_len}거래일 ({spy_len/252:.1f}년)")
-    for sym, df in data.items():
-        if sym != "SPY":
-            print(f"       {sym}: {len(df)}거래일")
-
-    # ── 2. 레짐 계산 ──
-    print(f"\n[2/4] 멀티팩터 레짐 계산 ...")
-    regimes_df = compute_regimes(data)
-    print(f"       유효 거래일: {len(regimes_df)}")
-
-    # ── 3. 포트폴리오 시뮬레이션 ──
-    print(f"\n[3/4] 포트폴리오 시뮬레이션 (초기 ${args.initial:,.0f}) ...")
-    sim = simulate_portfolio(data, regimes_df, initial=args.initial)
-
-    # ── 4. 메트릭 계산 ──
-    print(f"\n[4/4] 성과 메트릭 계산 ...")
-    metrics = compute_portfolio_metrics(sim["benchmark_equity"], sim["strategy_equity"])
-
-    # ── 결과 출력 ──
-    print_summary(metrics, regimes_df, args.period)
-
-    # ── JSON 저장 ──
-    today_str = date.today().strftime("%Y%m%d")
-    result = build_result(metrics, regimes_df, sim, args.period)
-    out_path = out_dir / f"georisk_regime_{today_str}.json"
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
-    print(f"Saved: {out_path}")
-
+    for name, start, end in windows:
+        s_spy = spy_df[(spy_df.index >= start) & (spy_df.index <= end)]
+        if s_spy.empty:
+            print(f"\n{name}: No data available for this range.")
+            continue
+            
+        s_tlt = tlt_df.reindex(s_spy.index).ffill()
+        s_gld = gld_df.reindex(s_spy.index).ffill() if gld_df is not None else None
+        s_sgov = sgov_df.reindex(s_spy.index).ffill() if sgov_df is not None else None
+        
+        # signals['date'] is the column to slice on
+        s_signals = signals[(signals['date'] >= start) & (signals['date'] <= end)]
+        
+        actual_start = s_spy.index[0].strftime("%Y-%m-%d")
+        actual_end = s_spy.index[-1].strftime("%Y-%m-%d")
+        
+        port = portfolio_comparison(s_signals, s_spy, s_tlt, config.PORTFOLIO_ALLOCATIONS, method="fixed", gld_df=s_gld, sgov_df=s_sgov)
+        
+        print(f"\n{name} ({actual_start} → {actual_end})")
+        print(f"  CAGR:   {port['gr_cagr']:.1f}%")
+        print(f"  MDD:    {port['gr_mdd']:.1f}%")
+        print(f"  Sharpe: {port['gr_sharpe']:.2f}")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--period", nargs="+", default=["3y"])
+    parser.add_argument("--breakdown", action="store_true")
+    parser.add_argument("--walkforward", action="store_true")
+    args = parser.parse_args()
+    
+    if args.walkforward:
+        run_walkforward()
+    elif args.breakdown:
+        run_breakdown(args.period)
+    else:
+        run_backtest(args.period)

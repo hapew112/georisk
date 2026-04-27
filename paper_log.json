@@ -1,0 +1,32 @@
+[
+  {
+    "date": "2026-04-10",
+    "regime": "NORMAL",
+    "action": "HOLD",
+    "spy_weight": 1.0,
+    "tlt_weight": 0.0,
+    "cash_weight": 0.0,
+    "spy_return_pct": -0.06617805145495703,
+    "tlt_return_pct": -0.24221348542609045,
+    "portfolio_return_pct": 0.0,
+    "portfolio_value": 9975.0,
+    "benchmark_value": 10000.0,
+    "rebalanced": true,
+    "fee_applied": 25.0
+  },
+  {
+    "date": "2026-03-11",
+    "regime": "ELEVATED",
+    "action": "HOLD",
+    "spy_weight": 0.7,
+    "tlt_weight": 0.3,
+    "cash_weight": 0.0,
+    "spy_return_pct": -0.12551629285171284,
+    "tlt_return_pct": -1.2913420206027149,
+    "portfolio_return_pct": -0.12551629285171284,
+    "portfolio_value": 9937.57,
+    "benchmark_value": 9987.45,
+    "rebalanced": true,
+    "fee_applied": 24.91
+  }
+]

@@ -6,10 +6,10 @@ SYMBOLS = {
     "dollar":  ["DX-Y.NYB"],
     "oil":     ["CL=F"],
     "yield":   ["^TNX"],
-    "gold":    ["GC=F"],
+    "gold":    ["GC=F", "GLD"],
     "crypto":  ["BTC-USD"],
     "korea":   ["^KS11"],
-    "bond":    ["TLT"],
+    "bond":    ["TLT", "SGOV"],
 }
 
 ALL_SYMBOLS = [s for group in SYMBOLS.values() for s in group]
@@ -42,6 +42,11 @@ VIX_REGIMES = {
 SIGNAL_MIN_STRESS = 2
 SIGNAL_MIN_REGIME = "ELEVATED"  # CALM < NORMAL < ELEVATED < CRISIS
 
+# VIX Mean Reversion thresholds
+VIX_ZSCORE_DEFENSIVE = 2.0    # go defensive when VIX 2 std above mean
+VIX_ZSCORE_AGGRESSIVE = -1.0  # opportunity when VIX 1 std below mean
+VIX_SMA_PERIOD = 20
+
 # Lookforward windows (days after signal)
 FORWARD_WINDOWS = [1, 3, 5, 10]
 
@@ -60,3 +65,24 @@ KELLY_MAX_FRACTION = 0.25
 SUCCESS_HIT_RATE_3D = 0.60       # > 60%
 SUCCESS_EDGE_VS_BASELINE = -0.5  # < -0.5% (signal days worse)
 SUCCESS_MDD_RATIO = 0.6          # GeoRisk MDD < 60% of buy-and-hold MDD
+
+# Hybrid allocation settings
+HYBRID_RP_REGIMES = ["ELEVATED", "CRISIS"]   # regimes that use RP
+HYBRID_RP_ASSETS  = ["SPY", "TLT", "GLD"]    # assets used in RP math (exclude SGOV)
+HYBRID_CAPS = {
+    "CALM":     {"SPY": 1.00, "TLT": 0.00, "GLD": 0.00, "SGOV": 0.00},  # fixed
+    "NORMAL":   {"SPY": 1.00, "TLT": 0.00, "GLD": 0.00, "SGOV": 0.00},  # fixed
+    "ELEVATED": {"SPY_MAX": 0.65, "GLD_MAX": 0.20, "SGOV_MIN": 0.00},    # RP with caps
+    "CRISIS":   {"SPY_MAX": 0.35, "GLD_MAX": 0.20, "SGOV_MIN": 0.20},    # RP + cash buffer
+}
+
+# Risk Parity settings
+RP_LOOKBACK = 20  # days for rolling volatility
+RP_CAPS = {
+    "CALM":     {"SPY_MAX": 1.00, "CASH_MIN": 0.0},
+    "NORMAL":   {"SPY_MAX": 0.90, "CASH_MIN": 0.0},
+    "ELEVATED": {"SPY_MAX": 0.65, "CASH_MIN": 0.0},
+    "CRISIS":   {"SPY_MAX": 0.35, "CASH_MIN": 0.2},
+}
+RP_REBALANCE = "daily"  # daily for now. quarterly optimization later.
+RP_MIN_TRADE = 0.02     # don't rebalance if weight change < 2%
