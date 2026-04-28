@@ -73,11 +73,12 @@ def headers(token: str, tr_id: str) -> dict:
     }
 
 # ============================================================
-# 잔고 조회
+# 잔고 및 자산 조회
 # ============================================================
-def get_balance(token: str) -> dict:
+def get_holdings(token: str) -> dict:
     """
-    해외주식 잔고 조회 → {"SPY": {"qty": x, "price": y}, ...}
+    해외주식 잔고 조회 (보유 종목 수량) → {"SPY": {"qty": x, "price": y}, ...}
+    TR_ID: VTTS3012R (모의)
     """
     params = {
         "CANO": ACCOUNT,
@@ -97,7 +98,6 @@ def get_balance(token: str) -> dict:
     data = resp.json()
 
     holdings = {}
-    total_stock_val = 0.0
     output1 = data.get("output1", [])
     if isinstance(output1, dict):
         output1 = [output1]
@@ -105,23 +105,80 @@ def get_balance(token: str) -> dict:
         sym   = item.get("ovrs_pdno", "").strip()
         qty   = float(item.get("ovrs_cblc_qty", 0) or 0)
         price = float(item.get("now_pric2", 0) or 0)
-        evlu  = float(item.get("ovrs_stck_evlu_amt", 0) or 0)
         if sym and qty > 0:
             holdings[sym] = {"qty": qty, "price": price}
-            total_stock_val += evlu if evlu else qty * price
+    
+    return holdings
 
-    # output2: 총평가 / 예수금
-    output2 = data.get("output2", {})
-    if isinstance(output2, list):
-        output2 = output2[0] if output2 else {}
-    total_eval = float(output2.get("tot_evlu_pfls_amt", 0) or 0)
-    cash_usd   = float(output2.get("frcr_dncl_amt_2", 0) or 0)
 
-    # total_eval 이 0이면 주식 평가액 + 예수금으로 추정
-    if total_eval == 0:
-        total_eval = total_stock_val + cash_usd
+def get_total_krw(token: str) -> float:
+    """
+    통합증거금 총 자산 조회 (KRW 합계)
+    TR_ID: VTRP6504R (모의)
+    """
+    params = {
+        "CANO": ACCOUNT,
+        "ACNT_PRDT_CD": ACNT_PROD,
+        "WCRC_FRCR_DVSN_CD": "02", # 외화
+        "NATN_CD": "000",          # 전체
+        "TR_MKET_CD": "00",        # 전체
+        "INQR_DVSN_CD": "00",      # 전체
+    }
+    resp = requests.get(
+        f"{BASE_URL}/uapi/overseas-stock/v1/trading/inquire-present-balance",
+        headers=headers(token, "VTRP6504R"),
+        params=params,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    
+    # output3: tot_asst_amt (총자산현황)
+    output3 = data.get("output3", {})
+    if isinstance(output3, list):
+        output3 = output3[0] if output3 else {}
+    
+    total_krw = float(output3.get("tot_asst_amt", 0) or 0)
+    return total_krw
 
-    return {"holdings": holdings, "total_eval": total_eval, "cash_usd": cash_usd}
+
+def get_psamount(token: str, symbol: str, price: float) -> int:
+    """
+    해외주식 매수 가능 수량 조회
+    TR_ID: VTTS3307R (모의 추정)
+    """
+    params = {
+        "CANO": ACCOUNT,
+        "ACNT_PRDT_CD": ACNT_PROD,
+        "OVRS_EXCG_CD": "NASD",
+        "ITEM_CD": symbol,
+        "OVRS_ORD_UNPR": f"{price:.2f}",
+    }
+    try:
+        resp = requests.get(
+            f"{BASE_URL}/uapi/overseas-stock/v1/trading/inquire-psamount",
+            headers=headers(token, "VTTS3307R"),
+            params=params,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return int(data.get("output", {}).get("ovrs_max_ord_psbl_qty", 0) or 0)
+    except Exception as e:
+        print(f"  [WARN] {symbol} 매수가능수량 조회 실패: {e}")
+        return 999999 # 실패 시 제한 없이 계산하도록 함 (주문 단계에서 거부됨)
+
+
+def get_krw_usd() -> float:
+    """환율 조회 (Frankfurter API)"""
+    fallback = float(os.environ.get("KRW_USD_RATE", 1430))
+    try:
+        resp = requests.get("https://api.frankfurter.app/latest?from=USD&to=KRW", timeout=5)
+        resp.raise_for_status()
+        return float(resp.json()["rates"]["KRW"])
+    except Exception as e:
+        print(f"  환율 조회 실패, fallback {fallback} 사용: {e}")
+        return fallback
 
 
 def get_current_price(symbol: str) -> float:
@@ -184,22 +241,21 @@ def get_signal() -> dict:
 # ============================================================
 # 리밸런싱 계산
 # ============================================================
-def calc_orders(signal: dict, balance: dict, prices: dict) -> list:
+def calc_orders(signal: dict, holdings: dict, total_krw: float, prices: dict, krw_usd: float) -> list:
     """
     목표비중 vs 현재비중 비교 → 주문 리스트 반환
-    [{"symbol": "SPY", "side": "buy"/"sell", "qty": n, "price": p}, ...]
+    total_krw 기반으로 수량 계산
     """
-    total = balance["total_eval"]
-    if total <= 0:
-        print("잔고 없음 — 주문 스킵")
+    if total_krw <= 0:
+        print("잔고 없음 (KRW 0) — 주문 스킵")
         return []
 
+    total_usd = total_krw / krw_usd
     targets = {
         "SPY": signal["w_spy"],
         "TLT": signal["w_tlt"],
     }
 
-    holdings = balance["holdings"]
     orders = []
 
     for sym, target_w in targets.items():
@@ -209,11 +265,11 @@ def calc_orders(signal: dict, balance: dict, prices: dict) -> list:
 
         current_qty  = holdings.get(sym, {}).get("qty", 0)
         current_val  = current_qty * price
-        current_w    = current_val / total
+        current_w    = current_val / total_usd
 
-        target_val   = total * target_w
-        target_qty   = int(target_val / price)
-        diff_w       = target_w - current_w
+        target_val_usd = total_usd * target_w
+        target_qty     = int(target_val_usd / price)
+        diff_w         = target_w - current_w
 
         # 리밸런싱 필터: 비중 차이 5% 미만 skip
         if abs(diff_w) < 0.05:
@@ -242,13 +298,9 @@ def calc_orders(signal: dict, balance: dict, prices: dict) -> list:
 def send_telegram(msg: str):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
-    import urllib.request
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": msg}).encode()
-    req = urllib.request.Request(url, data=data,
-                                 headers={"Content-Type": "application/json"})
     try:
-        urllib.request.urlopen(req)
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
     except Exception as e:
         print(f"Telegram error: {e}")
 
@@ -260,24 +312,22 @@ def main(dry_run: bool = False):
     print(f"  KIS Trader {'[DRY RUN]' if dry_run else '[LIVE]'} — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print(f"{'='*45}")
 
-    # 1. 토큰
-    print("토큰 발급 중...")
+    # 1. 토큰 & 환율
+    print("토큰 및 환율 조회 중...")
     token = get_token()
-    print("  OK")
+    krw_usd = get_krw_usd()
+    print(f"  OK (환율: {krw_usd:,.2f})")
 
     # 2. 시그널
     print("시그널 계산 중...")
     signal = get_signal()
     print(f"  SPY {signal['w_spy']*100:.1f}% / TLT {signal['w_tlt']*100:.1f}% / CASH {signal['w_cash']*100:.1f}%")
 
-    # 3. 잔고
+    # 3. 잔고 조회
     print("잔고 조회 중...")
-    balance = get_balance(token)
-    print(f"  총 평가액: ${balance['total_eval']:,.2f}")
-    print(f"  예수금:    ${balance['cash_usd']:,.2f}")
-    for sym, info in balance["holdings"].items():
-        print(f"  {sym}: {info['qty']:.0f}주 × ${info['price']:.2f}")
-
+    holdings = get_holdings(token)
+    total_krw = get_total_krw(token)
+    
     # 4. 현재가 (yfinance)
     prices = {}
     for sym in ["SPY", "TLT"]:
@@ -286,17 +336,17 @@ def main(dry_run: bool = False):
 
     # 5. 주문 계산
     print("\n주문 계산 중...")
-    # dry-run + 잔고 0 → 가상 $10,000으로 시뮬레이션
-    if dry_run and balance["total_eval"] == 0:
-        print("  [DRY RUN] 잔고 없음 → 가상 $10,000 기준 시뮬레이션")
-        spy_price = prices.get("SPY", 550)
-        tlt_price = prices.get("TLT", 90)
-        balance = {
-            "holdings": {},
-            "total_eval": 10000.0,
-            "cash_usd": 10000.0,
-        }
-    orders = calc_orders(signal, balance, prices)
+    # dry-run + 잔고 0 → 가상 15,000,000 KRW 기준으로 시뮬레이션
+    if dry_run and total_krw == 0:
+        print("  [DRY RUN] 잔고 없음 → 가상 15,000,000 KRW 기준 시뮬레이션")
+        total_krw = 15000000.0
+    
+    print(f"  총 자산(KRW): {total_krw:,.0f}원")
+    print(f"  총 자산(USD): ${total_krw/krw_usd:,.2f}")
+    for sym, info in holdings.items():
+        print(f"  {sym}: {info['qty']:.0f}주 × ${info['price']:.2f}")
+
+    orders = calc_orders(signal, holdings, total_krw, prices, krw_usd)
 
     if not orders:
         msg = (
@@ -311,6 +361,17 @@ def main(dry_run: bool = False):
     # 6. 주문 실행
     results = []
     for o in orders:
+        # 매수 시 주문가능수량 확인 (실전만 — dry-run은 시장 닫혀도 시뮬레이션해야 함)
+        if o["side"] == "buy" and not dry_run:
+            psamount = get_psamount(token, o["symbol"], o["price"])
+            if psamount < o["qty"]:
+                print(f"  [ADJUST] {o['symbol']} 수량 축소: {o['qty']} → {psamount} (주문가능수량 부족)")
+                o["qty"] = psamount
+
+        if o["qty"] <= 0:
+            print(f"  {o['symbol']} 주문 스킵 (수량 0)")
+            continue
+
         action = f"  {'[DRY]' if dry_run else ''} {o['side'].upper()} {o['symbol']} {o['qty']}주 @ ${o['price']:.2f}"
         action += f"  ({o['current_w']*100:.1f}% → {o['target_w']*100:.1f}%)"
         print(action)
@@ -328,11 +389,13 @@ def main(dry_run: bool = False):
                 print(f"    → 오류: {e}")
                 results.append({"symbol": o["symbol"], "side": o["side"],
                                  "qty": o["qty"], "status": "ERROR", "msg": str(e)})
+        else:
+            results.append(o)
 
     # 7. Telegram
     order_lines = "\n".join(
-        f"{'✅' if r.get('status')=='0' else '⚠️'} {r['side'].upper()} {r['symbol']} {r['qty']}주"
-        for r in (results if results else orders)
+        f"{'✅' if r.get('status')=='0' or dry_run else '⚠️'} {r['side'].upper()} {r['symbol']} {r['qty']}주"
+        for r in results
     )
     tg_msg = (
         f"📊 GeoRisk {'DRY RUN' if dry_run else '주문 완료'} | {signal['date']}\n"
