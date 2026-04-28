@@ -1,0 +1,120 @@
+================================================================================
+GeoRisk Session Summary — 2026-04-15
+================================================================================
+
+PRIMARY REQUEST
+---------------
+Building GeoRisk Terminal — personal quant trading dashboard for Korean retail
+investor on JARVIS (local Linux mini-PC).
+Goal: 20M KRW × 20%/yr compounding, lower MDD than SPY buy-and-hold.
+Long-term: full web control panel at georiskdashboard.a01041116626.workers.dev
+
+SESSION ACCOMPLISHMENTS
+-----------------------
+- v7 signal upgrade: Kalman Filter VIX smoothing (std 4.9 → 1.8)
+- v7 fee fix: 0.1% → 0.015%/side (Kiwoom actual rate)
+- v7 VaR/CVaR metrics added to metrics.py
+- v8 Hybrid Risk Parity designed and implemented (allocation.py)
+- Critical backtest bug fixed (v7 was using HYBRID_CAPS keys → SPY 100% always)
+- Walk-forward validation run
+- README rewritten with results
+- publish.py upgraded to 3-key KV format
+- worker.js created with 3-key /api/paper (NOT yet deployed)
+- users.py multi-user scaffold created (NOT integrated)
+
+VERIFIED BACKTEST RESULTS
+--------------------------
+Walk-forward (v7 Fixed):
+  In-sample  2016-2021: CAGR 27.7%, MDD -13.3%, Sharpe 2.00
+  Out-of-sample 2022-2026: CAGR 17.3%, MDD -16.5%, Sharpe 0.95
+  Verdict: CONDITIONAL PASS (Sharpe 0.95 > 0.8 threshold)
+
+10y full period:
+  v7 Fixed:  CAGR 23.7%, MDD -16.5%, Sharpe 1.52
+  v8 Hybrid: CAGR 27.4%, MDD -18.1%, Sharpe 1.99
+  Decision: v7 is production, v8 stays experimental
+
+ARCHITECTURE
+------------
+JARVIS (local, cron 09:00 KST weekdays)
+├── backtest/signals.py       # Kalman VIX → z-score → regime
+├── backtest/allocation.py    # v8 hybrid RP (SPY+TLT+GLD)
+├── backtest/paper_trader.py  # daily P&L, 4-cost model, Telegram
+├── backtest/publish.py       # → Cloudflare KV (3 keys)
+├── backtest/metrics.py       # Sharpe, MDD, CAGR, VaR95, CVaR95
+├── paper_log.json            # 2 test entries only (FORCE_DATE)
+└── .georisk_env              # Telegram tokens set; CF vars EMPTY
+
+Cloudflare Worker (georiskdashboard.a01041116626.workers.dev)
+├── /api/paper  ← old single paper_summary key (needs upgrade)
+└── /api/regime ← latest_regime KV
+
+COST MODEL (paper_trader.py)
+-----------------------------
+- Trade fee:            0.015%/side (Kiwoom actual)
+- FX spread:            0.2% on rebalanced volume only
+- Dividend withholding: SPY 0.00077%/day, TLT 0.00208%/day
+- Capital gains tax:    22% on gains > $1,900/yr, applied year-end
+
+SIGNAL LOGIC (v7)
+-----------------
+1. Kalman Filter smooths VIX daily noise
+2. 20-day rolling z-score of smoothed VIX
+3. z > 2.0 → DEFENSIVE action (tactical override to CRISIS allocation)
+4. VIX absolute level → regime:
+   CALM     (<15)  → SPY 100%
+   NORMAL   (15-20)→ SPY 100%
+   ELEVATED (20-28)→ SPY 70% / TLT 30%
+   CRISIS   (28+)  → SPY 40% / TLT 40% / Cash 20%
+
+PENDING ITEMS (priority order)
+-------------------------------
+1. CF env vars: CF_ACCOUNT_ID / CF_NAMESPACE_ID / CF_API_TOKEN still empty
+   → publish.py cannot upload to KV
+
+2. paper_trader.py upgrades NOT YET DONE:
+   - Min commission: FEE_MIN_USD = 1000 KRW / 1380 ≈ $0.72
+     trade_fee = max(total_traded * 0.00015, 0.72)
+   - ETF premium/discount: ETF_MODE="US"/"KR"
+     ETF_PREMIUM_RATE = 0.0 if US, 0.003 if KR
+
+3. Worker /api/paper upgrade: worker.js exists locally (3-key format)
+   but deployed Cloudflare worker still uses old format → needs wrangler deploy
+
+4. Paper trading 30-day gate: target May 14 for GO/NO-GO on real capital
+   Pass criteria: monthly return > 0.8%, MDD < -5% per month
+
+5. README: update v8 status to ✅ 완료 (실험적), add min commission + ETF
+   premium rows to cost model table
+
+6. command_runner.py (Phase 5): JARVIS polls KV for commands from web UI
+
+7. Multi-user support: users.py scaffold exists, paper_trader.py not integrated
+
+8. 한투 모의투자 API: deferred, needs APP_KEY/APP_SECRET
+
+KEY FILES MODIFIED THIS SESSION
+---------------------------------
+backtest/signals.py    — Kalman smoothing added
+backtest/metrics.py    — VaR/CVaR added, portfolio_comparison() upgraded
+backtest/allocation.py — NEW (v8 hybrid RP)
+backtest/config.py     — RP_CAPS, HYBRID_CAPS added
+backtest/backtest.py   — v7 vs v8 comparison, walk-forward, bug fix
+backtest/publish.py    — 3-key KV format
+worker.js              — NEW (not deployed)
+backtest/users.py      — NEW (multi-user scaffold, not integrated)
+README.md              — Rewritten with walk-forward results
+
+ERRORS FIXED
+------------
+- v7 bug: config.HYBRID_CAPS has SPY_MAX/GLD_MAX keys → method="fixed" got
+  default 1.0 for ELEVATED/CRISIS → v7 was always SPY 100% (= buy-and-hold)
+  Fix: changed to config.PORTFOLIO_ALLOCATIONS
+
+NOTES
+------
+- Prompts for Gemini/other AIs: write in English (better results)
+- We talk in Korean in this conversation
+- Perplexity free tier used for external validation
+- Gemini used for large code generation tasks
+================================================================================
