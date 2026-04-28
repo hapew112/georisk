@@ -298,13 +298,9 @@ def calc_orders(signal: dict, holdings: dict, total_krw: float, prices: dict, kr
 def send_telegram(msg: str):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
-    import urllib.request
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": msg}).encode()
-    req = urllib.request.Request(url, data=data,
-                                 headers={"Content-Type": "application/json"})
     try:
-        urllib.request.urlopen(req)
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
     except Exception as e:
         print(f"Telegram error: {e}")
 

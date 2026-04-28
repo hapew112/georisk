@@ -204,13 +204,10 @@ def send_telegram(signal, token=None, chat_id=None):
         f"DD: {signal['drawdown']*100:.2f}%"
     )
 
-    import urllib.request
+    import requests as _req
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = json.dumps({"chat_id": chat_id, "text": msg}).encode()
-    req = urllib.request.Request(url, data=data,
-                                headers={"Content-Type": "application/json"})
     try:
-        urllib.request.urlopen(req)
+        _req.post(url, json={"chat_id": chat_id, "text": msg}, timeout=10)
     except Exception as e:
         print(f"Telegram error: {e}")
 
