@@ -4012,42 +4012,63 @@ async function fetchPaper() {
   const widget = document.getElementById('paper-widget');
   const upd    = document.getElementById('paper-updated');
   try {
-    const d = await fetch('/api/paper').then(r => r.json());
-    if (d.error || !d.trading_days) {
+    const res = await fetch('/api/paper').then(r => r.json());
+    if (res.error || !res.status) {
       widget.innerHTML = '<div style="color:var(--text3);font-size:11px;font-family:var(--mono);">데이터 없음 (아직 실행 전)</div>';
       return;
     }
+    const d = res.status;
+    const m = res.metrics;
+    
     const REGIME_COLOR = { CALM:'#00e5ff', NORMAL:'#a0a0a0', ELEVATED:'#ffaa00', CRISIS:'#ff2d55' };
     const REGIME_EMOJI = { CALM:'🟢', NORMAL:'🟡', ELEVATED:'🟠', CRISIS:'🔴' };
-    const rc   = d.current_regime || 'NORMAL';
+    const rc   = d.regime || 'NORMAL';
     const col  = REGIME_COLOR[rc] || '#a0a0a0';
     const em   = REGIME_EMOJI[rc] || '⚪';
-    const ret  = d.total_return_pct || 0;
-    const ben  = d.benchmark_return_pct || 0;
-    const alp  = d.alpha_pct || 0;
-    const retCol = ret >= 0 ? 'var(--green,#30d158)' : 'var(--red,#ff2d55)';
-    const alpCol = alp >= 0 ? 'var(--green,#30d158)' : 'var(--red,#ff2d55)';
-    const statusCol = { AHEAD:'#30d158', 'ON TRACK':'#a0a0a0', BEHIND:'#ff2d55' }[d.status] || '#a0a0a0';
-    const alloc = d.current_alloc || {};
-    const spy  = Math.round((alloc.SPY  || 0) * 100);
-    const tlt  = Math.round((alloc.TLT  || 0) * 100);
-    const cash = Math.round((alloc.cash || 0) * 100);
+    
+    const weights = d.weights || {};
+    const spy  = Math.round((weights.SPY  || 0) * 100);
+    const tlt  = Math.round((weights.TLT  || 0) * 100);
+    const cash = Math.round((weights.cash || 0) * 100);
+    
+    const total_return = m.total_return || 0;
+    const retCol = total_return >= 0 ? 'var(--green,#30d158)' : 'var(--red,#ff2d55)';
+    
+    upd.textContent = d.updated_at || '--';
 
     widget.innerHTML = `
-      <div style="display:flex;gap:24px;flex-wrap:wrap;font-family:var(--mono);font-size:11px;">
-        <div>
-          <div style="color:var(--text3);font-size:9px;margin-bottom:3px;">포트폴리오</div>
-          <div style="color:${retCol};font-size:15px;font-weight:700;">$${(d.current_value||0).toLocaleString('en-US',{minimumFractionDigits:0})}</div>
-          <div style="color:${retCol};font-size:11px;">${ret>=0?'+':''}${ret.toFixed(2)}%</div>
+      <div style="font-family:var(--mono);font-size:11px;line-height:1.6;color:var(--text2);">
+        <div style="display:flex;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:8px;">
+          <span style="color:var(--text3);">Paper Trading Status</span>
+          <span style="color:var(--text3);">══════════════</span>
         </div>
-        <div>
-          <div style="color:var(--text3);font-size:9px;margin-bottom:3px;">벤치마크</div>
-          <div style="color:var(--text);font-size:15px;font-weight:700;">$${(d.benchmark_value||0).toLocaleString('en-US',{minimumFractionDigits:0})}</div>
-          <div style="color:var(--text2);font-size:11px;">${ben>=0?'+':''}${ben.toFixed(2)}%</div>
+        <div style="margin-bottom:4px;">Regime: <span style="color:${col};font-weight:700;">${rc}</span> ${em}</div>
+        <div style="margin-bottom:4px;">Action: <span style="color:var(--text);font-weight:700;">${d.action || 'HOLD'}</span></div>
+        <div style="margin-bottom:8px;">Allocation: <span style="color:var(--text2);">SPY ${spy}% | TLT ${tlt}% | Cash ${cash}%</span></div>
+        <div style="border-top:1px dashed var(--border);padding-top:6px;margin-top:6px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+            <span>Since inception:</span>
+            <span style="color:${retCol};font-weight:700;">${total_return >= 0 ? '+' : ''}${total_return.toFixed(2)}%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+            <span>Sharpe:</span>
+            <span style="color:var(--text);">${m.sharpe?.toFixed(2) || '0.00'}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+            <span>MDD:</span>
+            <span style="color:var(--red);">${m.mdd?.toFixed(1) || '0.0'}%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;">
+            <span>Days active:</span>
+            <span style="color:var(--text);">${m.days_active || 0}</span>
+          </div>
         </div>
-        <div>
-          <div style="color:var(--text3);font-size:9px;margin-bottom:3px;">초과수익 (α)</div>
-          <div style="color:${alpCol};font-size:15px;font-weight:700;">${alp>=0?'+':''}${alp.toFixed(2)}%</div>
+      </div>
+    `;
+  } catch(e) {
+    console.warn('paper fetch failed', e);
+  }
+}
         </div>
         <div>
           <div style="color:var(--text3);font-size:9px;margin-bottom:3px;">레짐</div>
