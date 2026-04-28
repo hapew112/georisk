@@ -2,7 +2,17 @@ __pycache__/
 *.pyc
 *.pyo
 data/cache/
+backtest/data/cache/
 results/
 venv/
 georisk-env/
 .georisk_env
+.env_georisk
+.kis_token.json
+cron.log
+paper_log.json
+debug_*.py
+backtest/users.json
+backtest/users.py
+session_summary_*.txt
+*.parquet
