@@ -364,7 +364,10 @@ def main(dry_run: bool = False):
         # 매수 시 주문가능수량 확인 (실전만 — dry-run은 시장 닫혀도 시뮬레이션해야 함)
         if o["side"] == "buy" and not dry_run:
             psamount = get_psamount(token, o["symbol"], o["price"])
-            if psamount < o["qty"]:
+            if psamount == 0:
+                # psamount=0 은 미국 장 마감 시간대 정상 응답 → 수량 그대로 유지
+                print(f"  [INFO] {o['symbol']} psamount=0 (장 마감 시간대) — 수량 {o['qty']}주 유지")
+            elif psamount < o["qty"]:
                 print(f"  [ADJUST] {o['symbol']} 수량 축소: {o['qty']} → {psamount} (주문가능수량 부족)")
                 o["qty"] = psamount
 
@@ -383,22 +386,33 @@ def main(dry_run: bool = False):
                 msg_code = result.get("msg1", "")
                 print(f"    → rt_cd={status} {msg_code}")
                 results.append({"symbol": o["symbol"], "side": o["side"],
-                                 "qty": o["qty"], "status": status, "msg": msg_code})
+                                 "qty": o["qty"], "price": o["price"], "status": status, "msg": msg_code})
                 time.sleep(0.5)  # API rate limit
             except Exception as e:
                 print(f"    → 오류: {e}")
                 results.append({"symbol": o["symbol"], "side": o["side"],
-                                 "qty": o["qty"], "status": "ERROR", "msg": str(e)})
+                                 "qty": o["qty"], "price": o["price"], "status": "ERROR", "msg": str(e)})
         else:
             results.append(o)
 
-    # 7. Telegram
+    # 7. Telegram — results 비어있으면 "주문없음" 알림
+    if not results:
+        msg = (
+            f"📊 GeoRisk | {signal['date']}\n"
+            f"SPY {signal['w_spy']*100:.1f}% / TLT {signal['w_tlt']*100:.1f}%\n"
+            f"주문 없음 (psamount=0 또는 수량 부족)"
+        )
+        send_telegram(msg)
+        print(f"\n{'='*45}")
+        return
+
     order_lines = "\n".join(
-        f"{'✅' if r.get('status')=='0' or dry_run else '⚠️'} {r['side'].upper()} {r['symbol']} {r['qty']}주"
+        f"{'✅' if r.get('status')=='0' or dry_run else '⚠️'} {r['side'].upper()} {r['symbol']} {r['qty']}주 @ ${r['price']:.2f}"
         for r in results
     )
+    label = 'DRY RUN' if dry_run else ('주문 접수' if results else '주문 없음')
     tg_msg = (
-        f"📊 GeoRisk {'DRY RUN' if dry_run else '주문 완료'} | {signal['date']}\n"
+        f"📊 GeoRisk {label} | {signal['date']}\n"
         f"SPY {signal['w_spy']*100:.1f}% / TLT {signal['w_tlt']*100:.1f}% / CASH {signal['w_cash']*100:.1f}%\n"
         f"Vol: {signal['realized_vol']*100:.1f}%  Corr: {signal['corr']:.3f}  DD: {signal['drawdown']*100:.2f}%\n\n"
         f"{order_lines}"
