@@ -1,4 +1,4 @@
-name = "georisk-proxy"
+name = "georiskdashboard"
 main = "worker.js"
 compatibility_date = "2026-04-27"
 
