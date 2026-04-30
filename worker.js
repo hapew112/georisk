@@ -230,7 +230,7 @@ export default {
       if (path === '/' || path === '/health') {
         return json({
           service: 'georisk-proxy',
-          version: '2.2.0',
+          version: '2.3.0',
           status: 'ok',
           timestamp: new Date().toISOString(),
           env: {
@@ -317,15 +317,21 @@ export default {
         const cached = getCache('macro');
         if (cached) return json(cached);
         const results = {};
-        await Promise.allSettled(MACRO_MAP.map(async ({ fetch: sym, key: mapKey }) => {
-          try {
-            const d = await fetchFinnhub(sym, key);
-            if (d.c) {
-              results[mapKey] = d;
-              setCache('q:' + sym, d, TTL.quote);
-            }
-          } catch {}
-        }));
+
+        if (!key) {
+          results.__warning = "FINNHUB_KEY not set — macro/sector data unavailable";
+        } else {
+          await Promise.allSettled(MACRO_MAP.map(async ({ fetch: sym, key: mapKey }) => {
+            try {
+              const d = await fetchFinnhub(sym, key);
+              if (d.c) {
+                results[mapKey] = d;
+                setCache('q:' + sym, d, TTL.quote);
+              }
+            } catch {}
+          }));
+        }
+
         // FX 환율 via Frankfurter (무료, 키 불필요)
         try {
           const fxCached = getCache('fx:usdkrw');
@@ -361,6 +367,7 @@ export default {
       if (path === '/api/sectors') {
         const cached = getCache('sectors');
         if (cached) return json(cached);
+        if (!key) return json({ error: "FINNHUB_KEY not configured in CF Workers", sectors: [] });
         const results = {};
         await Promise.allSettled(SECTOR_ETFS.map(async sym => {
           try {
@@ -375,6 +382,7 @@ export default {
       if (path === '/api/heatmap') {
         const cached = getCache('heatmap');
         if (cached) return json(cached);
+        if (!key) return json({ error: "FINNHUB_KEY not configured in CF Workers", sectors: [] });
         // sectors 캐시 재사용 or 새로 fetch
         let sectorData = getCache('sectors');
         if (!sectorData) {
