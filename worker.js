@@ -56,6 +56,21 @@ async function fetchFinnhub(symbol, apiKey) {
   return r.json();
 }
 
+async function fetchYahoo(symbol) {
+  const r = await fetch(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=2d&interval=1d`,
+    { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GeoRiskBot/2.0)' }, signal: AbortSignal.timeout(8000) }
+  );
+  if (!r.ok) throw new Error(`Yahoo HTTP ${r.status}`);
+  const d = await r.json();
+  const meta = d.chart?.result?.[0]?.meta;
+  if (!meta?.regularMarketPrice) throw new Error('no price');
+  const c = meta.regularMarketPrice;
+  const pc = meta.chartPreviousClose || meta.previousClose || c;
+  const dp = pc ? parseFloat(((c - pc) / pc * 100).toFixed(4)) : 0;
+  return { c, dp, pc };
+}
+
 const MACRO_MAP = [
   { fetch: 'USO',             key: 'CL1!'            },
   { fetch: 'GLD',             key: 'GC1!'            },
@@ -67,6 +82,20 @@ const MACRO_MAP = [
   { fetch: 'UNG',             key: 'NG1!'            },
   { fetch: 'CPER',            key: 'HG1!'            },
   { fetch: 'SLV',             key: 'SILVER'          },
+];
+
+// Yahoo Finance fallback (no API key needed)
+const YAHOO_MACRO_MAP = [
+  { yf: 'CL=F',     key: 'CL1!'            },
+  { yf: 'GC=F',     key: 'GC1!'            },
+  { yf: 'DX-Y.NYB', key: 'DXY'             },
+  { yf: '^VIX',     key: 'VIX'             },
+  { yf: 'BTC-USD',  key: 'BINANCE:BTCUSDT' },
+  { yf: '^TNX',     key: 'TVC:US10Y'       },
+  { yf: '^IRX',     key: 'TVC:US02Y'       },
+  { yf: 'NG=F',     key: 'NG1!'            },
+  { yf: 'HG=F',     key: 'HG1!'            },
+  { yf: 'SI=F',     key: 'SILVER'          },
 ];
 
 const SECTOR_ETFS = ['XLK','XLF','XLE','XLV','XLY','XLI','XLP','XLU','XLB','XLRE','XLC','SMH'];
@@ -300,16 +329,18 @@ export default {
         if (cached) return json(cached);
         const results = {};
 
-        if (!key) {
-          results.__warning = "FINNHUB_KEY not set — macro/sector data unavailable";
-        } else {
+        if (key) {
           await Promise.allSettled(MACRO_MAP.map(async ({ fetch: sym, key: mapKey }) => {
             try {
               const d = await fetchFinnhub(sym, key);
-              if (d.c) {
-                results[mapKey] = d;
-                setCache('q:' + sym, d, TTL.quote);
-              }
+              if (d.c) { results[mapKey] = d; setCache('q:' + sym, d, TTL.quote); }
+            } catch {}
+          }));
+        } else {
+          await Promise.allSettled(YAHOO_MACRO_MAP.map(async ({ yf, key: mapKey }) => {
+            try {
+              const d = await fetchYahoo(yf);
+              if (d.c) results[mapKey] = d;
             } catch {}
           }));
         }
@@ -349,11 +380,10 @@ export default {
       if (path === '/api/sectors') {
         const cached = getCache('sectors');
         if (cached) return json(cached);
-        if (!key) return json({ error: "FINNHUB_KEY not configured in CF Workers", sectors: [] });
         const results = {};
         await Promise.allSettled(SECTOR_ETFS.map(async sym => {
           try {
-            const d = await fetchFinnhub(sym, key);
+            const d = key ? await fetchFinnhub(sym, key) : await fetchYahoo(sym);
             if (d.c) results[sym] = d;
           } catch {}
         }));
