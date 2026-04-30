@@ -84,7 +84,6 @@ const MACRO_MAP = [
   { fetch: 'SLV',             key: 'SILVER'          },
 ];
 
-// Yahoo Finance fallback (no API key needed)
 const YAHOO_MACRO_MAP = [
   { yf: 'CL=F',     key: 'CL1!'            },
   { yf: 'GC=F',     key: 'GC1!'            },
@@ -394,7 +393,6 @@ export default {
       if (path === '/api/heatmap') {
         const cached = getCache('heatmap');
         if (cached) return json(cached);
-        if (!key) return json({ error: "FINNHUB_KEY not configured in CF Workers", sectors: [] });
         // sectors 캐시 재사용 or 새로 fetch
         let sectorData = getCache('sectors');
         if (!sectorData) {
