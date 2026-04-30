@@ -1904,9 +1904,7 @@ a{color:inherit;text-decoration:none;}
 // ============================================================
 
 // ── CONFIG ───────────────────────────────────────────────────
-// ★ Cloudflare Workers URL — 배포 후 여기 교체
-// 예: 'https://georisk-proxy.YOUR-NAME.workers.dev'
-const WORKERS_URL = '';
+const WORKERS_URL = window.location.origin;
 
 // GitHub Actions 캐시 레포 — YOUR_USERNAME 교체 필요
 const TG_CACHE_URL = 'https://raw.githubusercontent.com/YOUR_USERNAME/telegram-osint-cache/main/data/index.json';
