@@ -1367,9 +1367,8 @@ a{color:inherit;text-decoration:none;}
 // ============================================================
 
 // ── CONFIG ───────────────────────────────────────────────────
-// ★ Cloudflare Workers URL — 배포 후 여기 교체
-// 예: 'https://georisk-proxy.YOUR-NAME.workers.dev'
-const WORKERS_URL = 'https://georisk-proxy.a01041116626.workers.dev';
+// ★ Cloudflare Workers URL
+const WORKERS_URL = 'https://georiskdashboard.a01041116626.workers.dev';
 
 // GitHub Actions 캐시 레포 — YOUR_USERNAME 교체 필요
 const TG_CACHE_URL = 'https://raw.githubusercontent.com/YOUR_USERNAME/telegram-osint-cache/main/data/index.json';
@@ -4067,25 +4066,6 @@ async function fetchPaper() {
     `;
   } catch(e) {
     console.warn('paper fetch failed', e);
-  }
-}
-        </div>
-        <div>
-          <div style="color:var(--text3);font-size:9px;margin-bottom:3px;">레짐</div>
-          <div style="color:${col};font-size:13px;font-weight:700;">${em} ${rc}</div>
-          <div style="color:var(--text2);font-size:10px;">SPY ${spy}% / TLT ${tlt}% / Cash ${cash}%</div>
-        </div>
-      </div>
-      <div style="margin-top:8px;display:flex;gap:16px;font-family:var(--mono);font-size:10px;color:var(--text3);">
-        <span>${d.trading_days}거래일</span>
-        <span>리밸런싱 ${d.rebalances}회</span>
-        <span>누적비용 $${(d.total_fees||0).toFixed(2)}</span>
-        <span style="color:${statusCol};font-weight:700;">${d.status||'--'}</span>
-      </div>`;
-
-    upd.textContent = d.as_of ? `업데이트: ${d.as_of}` : '데이터 없음';
-  } catch(e) {
-    widget.innerHTML = '<div style="color:var(--text3);font-size:11px;font-family:var(--mono);">로드 실패</div>';
   }
 }
 

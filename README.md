@@ -1,206 +1,133 @@
 # GeoRisk Terminal
 
-개인 트레이딩용 퀀트 자산배분 + 모의투자 통합 대시보드.
-Vol Targeting 기반 SPY/TLT/Cash 동적 배분, 매일 JARVIS에서 자동 실행.
+개인 퀀트 자산배분 + 모의투자 통합 대시보드.
+Vol Targeting 기반 SPY/TLT/Cash 동적 배분, JARVIS에서 매일 자동 실행.
 
-- **목표**: 20M KRW × 20%/yr 복리, 바이앤홀드 대비 MDD 50% 감소
-- **환경**: JARVIS (8GB RAM 미니PC, Linux) + Cloudflare Workers + Telegram 알림
+- **목표**: 바이앤홀드 대비 MDD 50% 감소, Sharpe 개선
+- **환경**: JARVIS (미니PC, Linux) + Cloudflare Workers + Telegram + KIS 모의투자
+
+**라이브 대시보드**: https://georiskdashboard.a01041116626.workers.dev
 
 ---
 
-## 현재 상태 (2026-04-28)
+## 현재 상태 (2026-05-04)
 
 | Phase | 내용 | 상태 |
 |-------|------|------|
-| Phase 1 — Backtest | 10년 백테스트, 지표 산출, OOS 검증 | ✅ 완료 |
-| Phase 2 — Paper Trading | georisk_v2.py, 매일 cron 자동 실행, Telegram 알림 | ✅ 완료 |
-| Phase 3 — Dashboard | Cloudflare KV → /api/paper → index.html 위젯 | ✅ 완료 |
-| v7 — Signal Upgrade | Kalman Filter VIX 스무딩, VaR/CVaR 지표 추가 | ✅ 완료 |
-| **Vol Targeting (v2)** | **실현변동성 기반 연속 배분, OOS gap 0.263 PASS** | ✅ **완료 — 현재 전략** |
-| **KIS API 연동** | kis_trader.py, 통합증거금 KRW 기반 리팩토링 완료 | ✅ **완료** |
-| **Worker v2.3** | USDKRW/USDJPY 실시간 환율, /api/heatmap, GitHub 자동 배포 | ✅ **완료** |
-| **Telegram 수신 정상화** | urllib → requests 교체, IPv6 차단 우회 | ✅ **완료** |
-| 주간 점검 자동화 | 토/일 성과 리뷰 → 개선사항 Telegram 알림 | ⬜ 예정 |
-| ARCH/GARCH 레짐 감지 | 변동성 클러스터링 기반 신호 | ⬜ 예정 |
-| HMM 레짐 감지 | hmmlearn 기반 은닉 레짐 | ⬜ 예정 |
+| Backtest | 5년 백테스트, OOS 검증 (Sharpe gap 0.263 PASS) | ✅ |
+| Vol Targeting v2 | 실현변동성 기반 연속 배분 — 현재 메인 전략 | ✅ |
+| Dashboard | Cloudflare Workers 2-worker 아키텍처 | ✅ |
+| KIS API | 모의투자 자동 주문, 실잔고 스냅샷 | ✅ |
+| Weekly Report | Gemini 2.5 Flash 주간 분석 → Telegram | ✅ |
+| ARCH/GARCH 레짐 | 변동성 클러스터링 기반 신호 | ⬜ |
+| HMM 레짐 감지 | hmmlearn 기반 은닉 레짐 | ⬜ |
 
 ---
 
-## 전략 비교 및 채택 근거 (2026-04-27 확정)
-
-### v7 (Kalman VIX 레짐) vs Vol Targeting v2 (10y, 2016-2026)
-
-| 지표 | v7 레짐 | **Vol Targeting v2** | Buy & Hold |
-|------|---------|----------------------|------------|
-| CAGR | 12.31% | 12.00% | 14.85% |
-| Sharpe | 0.896 | **0.955** | 0.826 |
-| MDD | -27.69% | **-19.65%** | -33.72% |
-| Calmar | 0.445 | **0.643** | 0.440 |
-| OOS Sharpe gap | 미측정 | **0.263 ✅ PASS** | — |
-
-### OOS 검증 (IS: 2016-2020 → OOS: 2021-2026)
-
-| | IS Sharpe | OOS Sharpe | Gap |
-|--|--|--|--|
-| Vol Targeting v2 | 1.131 | 0.800 | **0.263 ✅** |
-
-### 주요 구간 성과
-
-| 구간 | Vol Targeting v2 | v7 | Buy & Hold |
-|------|------------------|----|------------|
-| 코로나 급락 (2020.2-3) | **-7.73%** | -14.75% | -33.40% |
-| 금리 인상 (2022) | **-16.32%** | -21.92% | -18.18% |
-
-**채택 결론:** Vol Targeting v2가 Sharpe, MDD, Calmar, OOS 안정성 모두 우위.
-v7 레짐 스위칭은 폐기. v7의 Kalman VIX CRISIS 감지는 향후 overlay로 검토.
-
----
-
-## 현재 전략 스펙 (georisk_v2.py)
+## 전략 스펙
 
 ```
 핵심: Vol Targeting (target_vol / realized_vol)
 자산: SPY / TLT / CASH
 
-파라미터:
-  target_vol     = 15%       # 연 변동성 타겟
-  dd_threshold   = -12%      # drawdown → exposure 50% 축소
-  corr_threshold = 0.2       # SPY-TLT 60d corr > 0.2 → TLT binary 제거
-  rebal_filter   = 5%        # weight 변화 5% 미만 → skip
-  spy_cap        = 130%      # SPY 최대 비중
-  spy_floor      = 20%       # SPY 최소 비중
-  lookback_vol   = 20d
-  lookback_corr  = 60d
-  fee_rate       = 0.015%/side
+target_vol     = 15%      # 연 변동성 타겟
+dd_threshold   = -12%     # drawdown → exposure 50% 축소
+corr_threshold = 0.2      # SPY-TLT 60d corr > 0.2 → TLT 제거
+rebal_filter   = 5%       # weight 변화 5% 미만 → skip
+spy_cap        = 130%
+spy_floor      = 20%
+lookback_vol   = 20d
+lookback_corr  = 60d
 ```
+
+### 백테스트 결과 (5y, 2021–2026)
+
+| 지표 | Vol Targeting v2 | Buy & Hold |
+|------|-----------------|------------|
+| Sharpe | **0.955** | 0.826 |
+| MDD | **-19.65%** | -33.72% |
+| Calmar | **0.643** | 0.440 |
 
 ---
 
 ## 아키텍처
 
 ```
-JARVIS (로컬, 매일 09:00 KST 자동 실행)
-├── georisk_v2.py             # Vol Targeting 전략 엔진 (현재 메인)
-├── kis_trader.py             # KIS 모의투자 자동 주문 (SPY/TLT)
-├── backtest/
-│   ├── data_fetcher.py       # yfinance: SPY, TLT, VIX, GLD 등
-│   ├── signals.py            # Kalman VIX → z-score → 레짐/액션 (v7)
-│   ├── paper_trader.py       # 일별 P&L, 4-비용 모델 (v7)
-│   ├── paper_summary.py      # 주간 요약 (매주 일요일)
-│   ├── publish.py            # → Cloudflare KV 업로드
-│   ├── telegram_notify.py    # Telegram Bot 알림
-│   ├── metrics.py            # Sharpe, MDD, CAGR, VaR, CVaR, Kelly
-│   ├── backtest.py           # 백테스트 엔진
-│   └── allocation.py         # Risk Parity 배분 (v7)
-├── paper_log.json            # 일별 시그널 로그 (v2 기준)
-├── worker.js                 # Cloudflare Workers API 프록시 (v2.3)
-├── wrangler.toml             # CF 자동 배포 설정 (GitHub push → 자동 배포)
-├── .env_georisk              # secrets (Telegram + KIS) — git 제외
-├── .georisk_env              # secrets (Telegram + CF) — git 제외
-└── index.html                # 대시보드
+JARVIS (로컬)
+├── georisk_v2.py          # 전략 엔진 — 시그널 계산
+├── kis_trader.py          # KIS 모의투자 자동 주문 + 잔고 스냅샷
+├── weekly_report.py       # Gemini API → 주간 리포트 → Telegram
+├── paper_log.json         # 시그널 기반 일별 로그
+├── kis_snapshot.json      # KIS 실잔고 스냅샷 (최대 90일)
+├── worker.js              # georiskdashboard 워커 (HTML 서빙)
+├── wrangler.toml
+└── backtest/
+    ├── paper_trader.py    # 일별 P&L 기록
+    ├── signals.py         # 시그널 계산
+    ├── data_fetcher.py    # yfinance 데이터
+    ├── metrics.py         # Sharpe, MDD, CAGR 등
+    └── backtest.py        # 백테스트 엔진
 
-Cloudflare Workers (georisk-proxy.a01041116626.workers.dev)
-├── /api/macro     ← Finnhub ETF 프록시 + Frankfurter FX (USDKRW/USDJPY)
-├── /api/heatmap   ← 섹터 ETF 등락률 (XLK, XLF, XLE 등 12개)
-├── /api/sectors   ← 섹터 ETF 상세
-├── /api/regime    ← latest_regime KV 키
-├── /api/paper     ← paper_summary KV 키
-├── /api/feargreed ← CNN Fear & Greed
-└── /api/news      ← RSS 뉴스 (글로벌/한국/매크로/사이버)
+Cloudflare Workers
+├── georisk-proxy          # API 서버 (FINNHUB_KEY, FRED_KEY 보유)
+│   ├── /api/macro         # VIX, DXY, Gold, Oil, BTC 등 — Yahoo Finance
+│   ├── /api/sectors       # 섹터 ETF 12개
+│   ├── /api/heatmap       # 섹터 히트맵
+│   ├── /api/chart         # OHLCV 캔들 (Yahoo Finance)
+│   ├── /api/credit        # HYG, LQD, TIP
+│   ├── /api/putcall       # VIX/SPX 비율
+│   ├── /api/yieldcurve    # 2y/10y/30y 수익률
+│   ├── /api/feargreed     # CNN Fear & Greed
+│   ├── /api/oref          # 이스라엘 공습경보
+│   ├── /api/news          # RSS 뉴스
+│   └── /api/paper         # 페이퍼 트레이딩 현황
+└── georiskdashboard       # HTML 대시보드 서빙
+    └── WORKERS_URL → georisk-proxy
 ```
 
 ---
 
-## 운영 사이클
+## Cron 스케줄 (KST 기준)
 
-```
-월 ~ 금  09:00 KST  시그널 계산 → KIS 모의투자 자동 주문 → Telegram 알림
-토 / 일              주간 성과 점검 → 개선 여부 판단 → 다음 주 전략 확인
-```
-
-**주간 점검 체크리스트 (매주 토/일)**
-- [ ] paper_log.json 이번 주 수익률 확인
-- [ ] 시그널 방향 vs 실제 시장 비교
-- [ ] 리밸런싱 발생 횟수 / 비용 확인
-- [ ] 전략 파라미터 조정 필요 여부 판단
-
-## Cron 스케줄 (JARVIS)
-
-```
-# 평일 09:00 KST — v2 시그널 + Telegram 알림
-0 9 * * 1-5  TELEGRAM_TOKEN=xxx TELEGRAM_CHAT_ID=yyy /usr/bin/python3 /home/hapew112/georisk/georisk_v2.py >> /home/hapew112/georisk/cron.log 2>&1
-
-# 평일 09:00 KST — KIS 모의투자 자동 주문
-0 9 * * 1-5  TELEGRAM_TOKEN=xxx TELEGRAM_CHAT_ID=yyy KIS_APP_KEY=xxx KIS_APP_SECRET=xxx /usr/bin/python3 /home/hapew112/georisk/kis_trader.py >> /home/hapew112/georisk/cron.log 2>&1
-
-# 평일 09:00 KST — v7 paper trading + KV 업로드 (병행 유지)
-0 9 * * 1-5  cd ~/georisk/backtest && source ~/.georisk_env && source venv/bin/activate && python paper_trader.py && python publish.py --paper >> ~/georisk/logs/paper_trade.log 2>&1
-
-# 일요일 09:00 KST — 주간 요약
-0 9 * * 0    cd ~/georisk/backtest && source ~/.georisk_env && source venv/bin/activate && python paper_summary.py --telegram >> ~/georisk/logs/weekly_summary.log 2>&1
-```
+| 시간 | 스크립트 | 역할 |
+|------|---------|------|
+| 평일 09:00 | `paper_trader.py` | 시그널 계산 + 페이퍼 로그 |
+| 평일 23:00 | `georisk_v2.py` | 시그널 + Telegram 알림 |
+| 평일 23:40 | `kis_trader.py` | KIS 주문 실행 + 잔고 스냅샷 저장 |
+| 일요일 09:00 | `weekly_report.py` | Gemini 주간 분석 → Telegram |
 
 ---
 
-## Telegram 알림 예시 (georisk_v2.py)
-
-```
-📊 GeoRisk v2 Signal
-Date: 2026-04-27
-SPY: 82.2%
-TLT: 0.0%
-CASH: 17.8%
-Vol: 18.4%
-Corr: 0.211
-DD: -1.39%
-```
-
----
-
-## 지표 체계
-
-| 지표 | 설명 |
-|------|------|
-| CAGR | 연간 복리 수익률 |
-| MDD | 최대 낙폭 |
-| Sharpe | 위험조정 수익률 |
-| Calmar | CAGR / MDD |
-| OOS Sharpe gap | IS vs OOS Sharpe 차이 (0.3 이하 = PASS) |
-| VaR 95% | 하루 최대 손실 (5% 확률) |
-| CVaR 95% | VaR 초과 시 평균 손실 |
-
----
-
-## 업그레이드 큐
-
-| 우선순위 | 항목 | 상태 |
-|---------|------|------|
-| 1 | KIS API 모의투자 연동 (해외주식 자동 주문) | ✅ 완료 |
-| 2 | Worker v2.3: USDKRW 실시간 환율 + /api/heatmap + GitHub 자동 배포 | ✅ 완료 |
-| 3 | kis_trader.py 통합증거금 리팩토링 (KRW 기반 잔고, psamount 검증) | ✅ 완료 |
-| 4 | Telegram IPv6 차단 우회 (urllib → requests) | ✅ 완료 |
-| 5 | 주간 리뷰 자동화 (paper_log → 성과 분석 → Telegram) | ⬜ 예정 (첫 점검: 2026-05-03) |
-| 6 | v7 Kalman CRISIS overlay 추가 (v2 위에 얹기) | ⬜ 검토 |
-| 7 | ARCH/GARCH 변동성 레짐 감지 | ⬜ 예정 |
-| 8 | HMM 레짐 감지 | ⬜ 예정 |
-
----
-
-## 설치 및 실행
+## 배포
 
 ```bash
-# 1. 환경 설정
-git clone https://github.com/hapew112/georisk
-cd georisk
-pip3 install yfinance pandas numpy --break-system-packages
-
-# 2. 오늘 시그널 확인
-python3 georisk_v2.py
-
-# 3. 백테스트 (10년)
-python3 georisk_v2.py --backtest
-
-# 4. Telegram 설정
-export TELEGRAM_TOKEN="your_bot_token"
-export TELEGRAM_CHAT_ID="your_chat_id"
+# georisk-proxy 또는 georiskdashboard 배포
+# ※ backtest/venv/ 때문에 반드시 /tmp/에서 배포
+rm -rf /tmp/wrangler_deploy && mkdir /tmp/wrangler_deploy
+cp worker.js wrangler.toml /tmp/wrangler_deploy/
+cd /tmp/wrangler_deploy && npx wrangler deploy
 ```
+
+GitHub push → `.github/workflows/deploy.yml` → georiskdashboard 자동 배포
+
+---
+
+## 설치
+
+```bash
+git clone https://github.com/hapew112/georisk
+cd georisk/backtest
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+
+# 오늘 시그널
+python3 ../georisk_v2.py
+
+# 드라이런
+python3 ../kis_trader.py --dry-run
+
+# 주간 리포트 테스트
+python3 ../weekly_report.py
+```
+
+환경변수는 `~/.georisk_env` 참고 (git 제외).
