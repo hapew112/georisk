@@ -1,0 +1,26 @@
+[
+  {
+    "as_of": "2026-05-03 18:21",
+    "date": "2026-05-03",
+    "total_krw": 283002890,
+    "total_usd": 191606.56,
+    "krw_usd": 1477.0,
+    "cash_usd": 11444.06,
+    "ord_psbl_krw": 0,
+    "signal": {
+      "w_spy": 1.0,
+      "w_tlt": 0.0,
+      "w_cash": 0.0,
+      "regime": "NORMAL"
+    },
+    "holdings": {
+      "SPY": {
+        "qty": 250,
+        "price": 720.65,
+        "avg_price": 715.59,
+        "value_usd": 180162.5,
+        "profit_rt": 0.71
+      }
+    }
+  }
+]

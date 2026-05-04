@@ -393,6 +393,63 @@ export default {
         return json(results);
       }
 
+      if (path === '/api/chart') {
+        const sym = url.searchParams.get('symbol') || 'SPY';
+        const interval = url.searchParams.get('interval') || '1d';
+        const range = url.searchParams.get('range') || '6mo';
+        const cacheKey = `chart:${sym}:${interval}:${range}`;
+        const cached = getCache(cacheKey);
+        if (cached) return json(cached);
+        try {
+          const r = await fetch(
+            `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=${interval}&range=${range}`,
+            { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GeoRiskBot/2.0)' }, signal: AbortSignal.timeout(15000) }
+          );
+          if (!r.ok) throw new Error('Yahoo HTTP ' + r.status);
+          const raw = await r.json();
+          const result0 = raw.chart?.result?.[0];
+          if (!result0) throw new Error('no result');
+          const meta = result0.meta || {};
+          const timestamps = result0.timestamp || [];
+          const ohlcv = result0.indicators?.quote?.[0] || {};
+          const candles = timestamps.map((t, i) => ({
+            time: t,
+            open:   ohlcv.open?.[i]   ?? null,
+            high:   ohlcv.high?.[i]   ?? null,
+            low:    ohlcv.low?.[i]    ?? null,
+            close:  ohlcv.close?.[i]  ?? null,
+            volume: ohlcv.volume?.[i] ?? null,
+          })).filter(c => c.close !== null);
+          const result = { symbol: sym, meta: { currency: meta.currency, regularMarketPrice: meta.regularMarketPrice }, candles };
+          setCache(cacheKey, result, 300);
+          return json(result);
+        } catch (e) {
+          return err('Chart fetch failed: ' + e.message, 502);
+        }
+      }
+
+      if (path === '/api/credit') {
+        const cached = getCache('credit');
+        if (cached) return json(cached);
+        try {
+          const [hyg, lqd, tip] = await Promise.all([
+            fetchYahoo('HYG'),
+            fetchYahoo('LQD'),
+            fetchYahoo('TIP'),
+          ]);
+          const result = {
+            HYG: hyg,
+            LQD: lqd,
+            TIP: tip,
+            updated: new Date().toISOString(),
+          };
+          setCache('credit', result, TTL.sector || 300);
+          return json(result);
+        } catch (e) {
+          return err('Credit fetch failed: ' + e.message, 502);
+        }
+      }
+
       if (path === '/api/heatmap') {
         const cached = getCache('heatmap');
         if (cached) return json(cached);
@@ -1907,7 +1964,7 @@ a{color:inherit;text-decoration:none;}
 // ============================================================
 
 // ── CONFIG ───────────────────────────────────────────────────
-const WORKERS_URL = window.location.origin;
+const WORKERS_URL = 'https://georisk-proxy.a01041116626.workers.dev';
 
 // GitHub Actions 캐시 레포 — YOUR_USERNAME 교체 필요
 const TG_CACHE_URL = 'https://raw.githubusercontent.com/YOUR_USERNAME/telegram-osint-cache/main/data/index.json';
@@ -4607,25 +4664,6 @@ async function fetchPaper() {
     console.warn('paper fetch failed', e);
   }
 }
-        </div>
-        <div>
-          <div style="color:var(--text3);font-size:9px;margin-bottom:3px;">레짐</div>
-          <div style="color:\${col};font-size:13px;font-weight:700;">\${em} \${rc}</div>
-          <div style="color:var(--text2);font-size:10px;">SPY \${spy}% / TLT \${tlt}% / Cash \${cash}%</div>
-        </div>
-      </div>
-      <div style="margin-top:8px;display:flex;gap:16px;font-family:var(--mono);font-size:10px;color:var(--text3);">
-        <span>\${d.trading_days}거래일</span>
-        <span>리밸런싱 \${d.rebalances}회</span>
-        <span>누적비용 $\${(d.total_fees||0).toFixed(2)}</span>
-        <span style="color:\${statusCol};font-weight:700;">\${d.status||'--'}</span>
-      </div>\`;
-
-    upd.textContent = d.as_of ? \`업데이트: \${d.as_of}\` : '데이터 없음';
-  } catch(e) {
-    widget.innerHTML = '<div style="color:var(--text3);font-size:11px;font-family:var(--mono);">로드 실패</div>';
-  }
-}
 
 // switchMainTab에 portfolio 훅 (별도 — 탭 진입 시 렌더)
 const _origSwitch = switchMainTab;
@@ -5110,7 +5148,7 @@ async function fetchOREFDirect(){
     const r=await fetch(PROXY1+encodeURIComponent(OREF_URL),{signal:AbortSignal.timeout(8000)});
     if(!r.ok) throw new Error(\`HTTP \${r.status}\`);
     const text=await r.text();
-    if(!text||text.trim()===''||text.trim()==='\r\n'){
+    if(!text||text.trim()===''||text.trim()==='\\r\\n'){
       el.innerHTML=\`<div class="al-item"><span class="al-icon">✅</span><div class="al-body"><div class="al-text">현재 활성 공습 경보 없음</div><div class="al-meta">\${new Date().toLocaleTimeString('ko-KR')} 기준 · IDF OREF</div></div></div>\`;
       document.getElementById('alert-cnt').textContent='0'; return;
     }
@@ -5127,7 +5165,7 @@ async function fetchOREFDirect(){
     try{
       const r2=await fetch(PROXY2+encodeURIComponent(OREF_URL),{signal:AbortSignal.timeout(6000)});
       const text2=await r2.text();
-      if(!text2||text2.trim()===''||text2.trim()==='\r\n'){
+      if(!text2||text2.trim()===''||text2.trim()==='\\r\\n'){
         el.innerHTML=\`<div class="al-item"><span class="al-icon">✅</span><div class="al-body"><div class="al-text">현재 활성 공습 경보 없음</div></div></div>\`; return;
       }
       const data2=JSON.parse(text2);
